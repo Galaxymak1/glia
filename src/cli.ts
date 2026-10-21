@@ -2,14 +2,17 @@
 import { parseArgs } from "node:util";
 import { defaultDbPath, openDb } from "./db.js";
 import { migrate, schemaVersion } from "./migrations.js";
+import { defaultTranscriptsDir, formatReport, scanPaths } from "./scan.js";
 
 const USAGE = `Usage: brain <command> [options]
 
 Commands:
-  init      Create the database, or apply pending migrations
+  init                          Create the database, or apply pending migrations
+  scrub --dry-run [path...]     Report the secrets scrubbing would remove (default: ~/.claude/projects)
 
 Options:
   --db <path>   Database file (default: $BRAIN_DB, else ~/.local/share/ai_second_brain/brain.db)
+  --show        With scrub: list each finding with its file, line and a masked preview
   -h, --help    Show this help`;
 
 function init(dbPath: string): void {
@@ -32,10 +35,12 @@ function main(argv: string[]): number {
     allowPositionals: true,
     options: {
       db: { type: "string" },
+      "dry-run": { type: "boolean" },
+      show: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
-  const [command] = positionals;
+  const [command, ...args] = positionals;
   if (values.help) {
     console.log(USAGE);
     return 0;
@@ -47,6 +52,13 @@ function main(argv: string[]): number {
   switch (command) {
     case "init":
       init(values.db ?? defaultDbPath());
+      return 0;
+    case "scrub":
+      if (!values["dry-run"]) {
+        console.error("brain scrub needs --dry-run: scrubbed copies are written by ingest once the evidence store (#2) lands.");
+        return 1;
+      }
+      console.log(formatReport(scanPaths(args.length ? args : [defaultTranscriptsDir()]), values.show ?? false));
       return 0;
     default:
       console.error(`Unknown command: ${command}\n\n${USAGE}`);
