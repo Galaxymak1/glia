@@ -101,20 +101,23 @@ const group =
     return null;
   };
 const whole = group(0);
+const valueCheck = (g: number) => (m: RegExpExecArray) => (isSecretValue(m[g] ?? "") ? group(g)(m) : null);
 
 // Patterns that could start anywhere inside a run of word characters carry a
 // lookbehind, so a long run costs linear time instead of quadratic.
 const RULES: Rule[] = [
-  // A key body needs a real base64 run, so code that only mentions the markers is kept.
+  // Between the markers only header lines (`Proc-Type: ...`) and base64 lines, joined by real
+  // or JSON-escaped line breaks; the body needs a real base64 run, so code that only mentions
+  // the markers is kept.
   {
     kind: "private_key",
-    re: /-----BEGIN ([A-Z ]*)PRIVATE KEY-----(?=[\s\S]{0,400}?[A-Za-z0-9+/]{40})[\s\S]*?-----END \1PRIVATE KEY-----/dg,
-    pick: whole,
+    re: /-----BEGIN ([A-Z ]*)PRIVATE KEY-----(?:[ \t]*(?:\r?\n|\\(?:r\\)?n)(?:[A-Za-z][\w-]*:[^\n\\]*|[A-Za-z0-9+/=]*))+?[ \t]*(?:\r?\n|\\(?:r\\)?n)-----END \1PRIVATE KEY-----/dg,
+    pick: (m) => (/[A-Za-z0-9+/]{40}/.test(m[0]) ? whole(m) : null),
   },
   // A truncated paste: the BEGIN line, optional headers and base64 lines, no END line.
   {
     kind: "private_key",
-    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[ \t]*(?:\r?\n|\\r?\\n)(?:[A-Za-z][\w-]*:[^\n\\]*|[A-Za-z0-9+/=]{16,}))+/dg,
+    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[ \t]*(?:\r?\n|\\(?:r\\)?n)(?:[A-Za-z][\w-]*:[^\n\\]*|[A-Za-z0-9+/=]{16,}))+/dg,
     pick: (m) => (/[A-Za-z0-9+/]{40}/.test(m[0]) ? whole(m) : null),
   },
   { kind: "anthropic_key", re: /(?<![\w-])sk-ant-[A-Za-z0-9_-]{20,}/dg, pick: whole },
@@ -142,8 +145,12 @@ const RULES: Rule[] = [
     pick: (m) => (isSecretValue(m[1] ?? "") ? group(1)(m) : null),
   },
   // Passwords on a command line: `mysql -pX`, `curl -u user:X`, `sshpass -p X`, `--password=X`.
-  { kind: "cli_password", re: /\b(?:mysql|mysqldump|mariadb)\b[^\n]*?[ \t]-p([^\s"'-][^\s"']*)/dg, pick: group(1) },
-  { kind: "cli_password", re: /\bcurl\b[^\n]*?[ \t](?:-u|--user)[ \t]+["']?[^\s:"']*:([^\s"']+)/dg, pick: group(1) },
+  // The scan stays inside one command (no `;`, `|`, `&`) and is bounded, so it stays linear.
+  { kind: "cli_password", re: /\b(?:mysql|mysqldump|mariadb)\b[^\n;|&]{0,200}?[ \t]-p([^\s"'-][^\s"']*)/dg, pick: valueCheck(1) },
+  { kind: "cli_password", re: /\bcurl\b[^\n;|&]{0,200}?[ \t](?:-u|--user)[ \t]+["']?[^\s:"']*:([^\s"']+)/dg, pick: valueCheck(1) },
+  { kind: "cli_password", re: /\bdocker[ \t]+login\b[^\n;|&]{0,200}?[ \t]-p[ \t]+["']?([^\s"']+)/dg, pick: valueCheck(1) },
+  { kind: "cli_password", re: /\bhtpasswd[ \t]+-[a-zA-Z]*b[a-zA-Z]*(?:[ \t]+[^\s;|&]+){2}[ \t]+["']?([^\s"';|&]+)/dg, pick: valueCheck(1) },
+  { kind: "cli_password", re: /\becho[ \t]+(?:-n[ \t]+)?["']?([^\s"'|]+)["']?[ \t]*\|[^\n;&]{0,200}?--password-stdin/dg, pick: valueCheck(1) },
   { kind: "cli_password", re: /\bsshpass[ \t]+-p[ \t]*["']?([^\s"']+)/dg, pick: group(1) },
   {
     kind: "cli_password",
@@ -161,14 +168,15 @@ const RULES: Rule[] = [
     ),
     pick: (m) => {
       const unquoted = m[4];
-      if (unquoted !== undefined && (looksLikeCode(unquoted) || (/\s/.test(unquoted) && !looksRandom(unquoted)))) return null;
+      // An unquoted value with spaces is prose (`- password: at least 12 characters`), not a secret.
+      if (unquoted !== undefined && (looksLikeCode(unquoted) || /\s/.test(unquoted))) return null;
       return isSecretValue(m[2] ?? m[3] ?? unquoted ?? "", m[1]) ? group(2, 3, 4)(m) : null;
     },
   },
   // Quoted literals anywhere: `password = "..."`, `"api_key": "..."`, `{ token: 'ab12...' }`.
   {
     kind: "assigned_secret",
-    re: new RegExp(String.raw`(?<![\w.-])["']?([\w.-]*${SECRET_NAME})["']?[ \t]*[:=][ \t]*(["'])((?:(?!\2)[^\n\\]|\\.){4,}?)\2`, "dgi"),
+    re: new RegExp(String.raw`(?<![\w.-])["']?([\w.-]*${SECRET_NAME})["']?[ \t]*[:=][ \t]*(["'])((?:(?!\2)[^\n\\]|\\.){4,512}?)\2`, "dgi"),
     pick: (m) => (isSecretValue(m[3] ?? "", m[1]) ? group(3)(m) : null),
   },
 ];
@@ -187,8 +195,16 @@ export function scrubText(text: string): ScrubResult<string> {
       spans.push(span);
       findings.push({ kind: rule.kind, preview: mask(secret) });
     }
-    // Splice by position, last first, so earlier offsets stay valid.
-    for (const { start, end } of spans.reverse()) out = out.slice(0, start) + redacted(rule.kind) + out.slice(end);
+    if (!spans.length) continue;
+    // Rebuild in one pass (spans are in order and disjoint): linear in the text, not in text × findings.
+    const parts: string[] = [];
+    let copied = 0;
+    for (const { start, end } of spans) {
+      parts.push(out.slice(copied, start), redacted(rule.kind));
+      copied = end;
+    }
+    parts.push(out.slice(copied));
+    out = parts.join("");
   }
   return { value: out, findings };
 }
@@ -210,7 +226,7 @@ export function scrubJson(value: unknown): ScrubResult<unknown> {
       findings.push(...r.findings);
       return r.value;
     }
-    if (typeof v === "number" && key && PASSWORD_NAME.test(key)) {
+    if (typeof v === "number" && key && PASSWORD_NAME.test(key) && String(Math.abs(v)).length >= 4) {
       findings.push({ kind: "assigned_secret", preview: mask(String(v)) });
       return redacted("assigned_secret");
     }
@@ -268,7 +284,7 @@ export function scrubJsonSource(source: string): ScrubResult<string> | null {
     } else if (c === "-" || (c >= "0" && c <= "9")) {
       let j = i + 1;
       while (j < source.length && /[\d.eE+-]/.test(source[j]!)) j++;
-      if (afterColon && key && PASSWORD_NAME.test(key)) {
+      if (afterColon && key && PASSWORD_NAME.test(key) && source.slice(i, j).replace("-", "").length >= 4) {
         findings.push({ kind: "assigned_secret", preview: mask(source.slice(i, j)) });
         splice(i, j, JSON.stringify(redacted("assigned_secret")));
       }

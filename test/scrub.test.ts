@@ -67,6 +67,12 @@ credentials = "1.5.0"
 fetch(url, { credentials: "include" })
 authToken: "use-cookie"
 - password: use a strong one
+- password: must be at least 12 characters
+Secret: 3 things matter here
+mysql -u root appdb; mkdir -pv backups
+curl -u "$USER:$PASS" https://x.local
+const PEM_START = "-----BEGIN RSA PRIVATE KEY-----"; // commit 5412132d8500a7029ae7645369134499c4764741
+const PEM_END = "-----END RSA PRIVATE KEY-----";
 sqlalchemy.url = driver://user:pass@localhost/dbname
 MATOMO_DB_PASSWORD=change-me
 secret = stockage.read_key()
@@ -106,6 +112,9 @@ describe("scrubText", () => {
     ["mysql -p", "mysql -uroot -pMyS3cret appdb", "mysql -uroot -p[REDACTED:cli_password] appdb"],
     ["curl -u", "curl -u admin:Adm1nPass https://x.local", "curl -u admin:[REDACTED:cli_password] https://x.local"],
     ["--password=", "psql --password=Pg5ecret", "psql --password=[REDACTED:cli_password]"],
+    ["docker login -p", "docker login -u me -p Dk3rPass registry.io", "docker login -u me -p [REDACTED:cli_password] registry.io"],
+    ["htpasswd -b", "htpasswd -bc .htpasswd admin Htp4ss!", "htpasswd -bc .htpasswd admin [REDACTED:cli_password]"],
+    ["--password-stdin", "echo Gh5ecret99 | docker login --password-stdin", "echo [REDACTED:cli_password] | docker login --password-stdin"],
   ])("redacts %s", (_name, input, output) => {
     expect(scrubText(input).value).toBe(output);
   });
@@ -115,6 +124,9 @@ describe("scrubText", () => {
     expect(scrubText(`key:\n${encrypted}\nend`).value).toBe("key:\n[REDACTED:private_key]\nend");
     const truncated = `-----BEGIN PRIVATE KEY-----\n${S.pemBody}\n${S.pemBody}`;
     expect(scrubText(truncated).value).toBe("[REDACTED:private_key]");
+    // A half-written JSONL line (not valid JSON) keeps escaped line breaks.
+    const brokenLine = `{"stdout":"-----BEGIN PRIVATE KEY-----\\n${S.pemBody}\\n${S.pemBody}`;
+    expect(scrubJsonl(brokenLine).value).toBe(`{"stdout":"[REDACTED:private_key]`);
   });
 
   it("leaves look-alikes untouched", () => {
@@ -146,6 +158,9 @@ describe("scrubText", () => {
       "x://".repeat(50_000),
       "-----BEGIN RSA PRIVATE KEY-----\n".repeat(5_000),
       ("DB_PASSWORD=" + "a ".repeat(50)).repeat(1_000),
+      "mysql ".repeat(40_000),
+      "curl ".repeat(40_000),
+      "password='".repeat(20_000),
     ];
     for (const input of inputs) {
       const t = performance.now();
@@ -157,7 +172,7 @@ describe("scrubText", () => {
 
 describe("scrubJson", () => {
   it("redacts strings under secret-looking keys and inside nested values", () => {
-    const input = { apiKey: S.jsonKey, nested: [{ text: `token ${S.github}` }], count: 3, author: "Kylian", db_password: 12345678 };
+    const input = { apiKey: S.jsonKey, nested: [{ text: `token ${S.github}` }], count: 3, author: "Kylian", db_password: 12345678, min_password: 8 };
     const { value, findings } = scrubJson(input);
     expect(value).toEqual({
       apiKey: "[REDACTED:assigned_secret]",
@@ -165,6 +180,7 @@ describe("scrubJson", () => {
       count: 3,
       author: "Kylian",
       db_password: "[REDACTED:assigned_secret]",
+      min_password: 8,
     });
     expect(findings.map((f) => f.kind).sort()).toEqual(["assigned_secret", "assigned_secret", "github_token"]);
     expect(input.apiKey).toBe(S.jsonKey); // input not mutated
