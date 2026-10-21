@@ -15,7 +15,24 @@ export function openDb(path: string): Database.Database {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
   sqliteVec.load(db);
-  db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000");
+  enableWal(db);
   db.pragma("foreign_keys = ON");
   return db;
+}
+
+// Switching a fresh file to WAL can fail with SQLITE_BUSY without consulting
+// busy_timeout when another connection is opening it too, so retry it here.
+function enableWal(db: Database.Database, timeoutMs = 5000): void {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      db.pragma("journal_mode = WAL");
+      return;
+    } catch (err) {
+      const busy = err instanceof Database.SqliteError && err.code.startsWith("SQLITE_BUSY");
+      if (!busy || Date.now() > deadline) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
 }

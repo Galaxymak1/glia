@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { defaultDbPath, openDb } from "./db.js";
 import { migrate, schemaVersion } from "./migrations.js";
@@ -14,12 +13,12 @@ Options:
   -h, --help    Show this help`;
 
 function init(dbPath: string): void {
-  const existed = existsSync(dbPath);
   const db = openDb(dbPath);
   try {
     const applied = migrate(db);
     const version = schemaVersion(db);
-    if (!existed) console.log(`Created ${dbPath} (schema v${version})`);
+    // Decided from what this run applied, so two racing inits never both say "Created".
+    if (applied[0] === 1) console.log(`Created ${dbPath} (schema v${version})`);
     else if (applied.length) console.log(`Migrated ${dbPath} to schema v${version} (applied ${applied.join(", ")})`);
     else console.log(`${dbPath} is up to date (schema v${version})`);
   } finally {
@@ -37,9 +36,13 @@ function main(argv: string[]): number {
     },
   });
   const [command] = positionals;
-  if (values.help || !command) {
+  if (values.help) {
     console.log(USAGE);
-    return values.help ? 0 : 1;
+    return 0;
+  }
+  if (!command) {
+    console.error(USAGE);
+    return 1;
   }
   switch (command) {
     case "init":
