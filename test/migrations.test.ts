@@ -44,4 +44,19 @@ describe("migrate", () => {
     expect(db.prepare("SELECT turn_id, model, dims FROM turns_vec").get()).toEqual({ turn_id: 1, model: "bge-m3", dims: EMBEDDING_DIMS });
     expect(() => db.prepare("INSERT INTO turns_vec (turn_id, embedding) VALUES (?, ?)").run(2n, new Float32Array(8))).toThrow();
   });
+
+  it("drops a turn's vector with the turn and never reuses its id", () => {
+    const db = openDb(":memory:");
+    migrate(db);
+    db.prepare("INSERT INTO sources (id, kind, external_id, raw_path, raw_sha256, parser_version) VALUES (1, 'cc', 's1', 'raw', 'abc', 'cc@1')").run();
+    const turn = db.prepare("INSERT INTO turns (source_id, external_uuid, role, text) VALUES (1, ?, 'user', ?)");
+    turn.run("u1", "alpha");
+    const { lastInsertRowid: oldId } = turn.run("u2", "beta");
+    db.prepare("INSERT INTO turns_vec (turn_id, embedding, model, dims) VALUES (?, ?, 'bge-m3', ?)").run(BigInt(oldId), new Float32Array(EMBEDDING_DIMS), BigInt(EMBEDDING_DIMS));
+    db.prepare("DELETE FROM sources WHERE id = 1").run(); // cascades to turns, as a re-parse would
+    expect(db.prepare("SELECT count(*) AS n FROM turns_vec").get()).toEqual({ n: 0 });
+    db.prepare("INSERT INTO sources (id, kind, external_id, raw_path, raw_sha256, parser_version) VALUES (1, 'cc', 's1', 'raw', 'abc', 'cc@2')").run();
+    const { lastInsertRowid: newId } = turn.run("u3", "delta");
+    expect(Number(newId)).toBeGreaterThan(Number(oldId));
+  });
 });

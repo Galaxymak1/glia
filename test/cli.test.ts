@@ -1,4 +1,5 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,5 +19,16 @@ describe("brain init", () => {
 
   it("rejects an unknown command", () => {
     expect(() => brain("nope")).toThrow(/Unknown command: nope/);
+  });
+
+  it("survives several inits racing on a fresh path", async () => {
+    const db = join(dir, "race", "brain.db");
+    const run = promisify(execFile);
+    const outs = await Promise.all(
+      Array.from({ length: 4 }, () => run(process.execPath, ["--import", "tsx", "src/cli.ts", "init", "--db", db], { encoding: "utf8" })),
+    );
+    const created = outs.filter((o) => o.stdout.startsWith("Created")).length;
+    expect(created).toBe(1);
+    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v1)\n`);
   });
 });

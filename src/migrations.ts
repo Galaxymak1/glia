@@ -32,8 +32,10 @@ export const migrations: Migration[] = [
         UNIQUE (kind, external_id)
       );
 
+      -- AUTOINCREMENT: a deleted turn's id is never reused, so nothing keyed by
+      -- turn id (FTS rows, vectors) can attach to a different turn.
       CREATE TABLE turns (
-        id            INTEGER PRIMARY KEY,
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
         source_id     INTEGER NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
         external_uuid TEXT    NOT NULL,
         parent_uuid   TEXT,
@@ -74,11 +76,15 @@ export const migrations: Migration[] = [
         model     TEXT,
         dims      INTEGER
       );
+      -- vec0 cannot hold a foreign key; drop a turn's vector with the turn.
+      CREATE TRIGGER turns_vec_ad AFTER DELETE ON turns BEGIN
+        DELETE FROM turns_vec WHERE turn_id = old.id;
+      END;
 
       CREATE TABLE jobs (
         id          INTEGER PRIMARY KEY,
         type        TEXT NOT NULL,
-        state       TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed')),
+        state       TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled', 'expired')),
         batch_id    TEXT,
         started_at  TEXT,
         finished_at TEXT
@@ -96,11 +102,15 @@ export function migrate(db: Database): number[] {
   const applied: number[] = [];
   for (const m of migrations) {
     if (m.version <= schemaVersion(db)) continue;
-    db.transaction(() => {
+    // IMMEDIATE takes the write lock up front; re-checking inside it means a
+    // concurrent `brain init` that got there first turns this into a no-op.
+    const ran = db.transaction(() => {
+      if (m.version <= schemaVersion(db)) return false;
       db.exec(m.sql);
       db.pragma(`user_version = ${m.version}`);
-    })();
-    applied.push(m.version);
+      return true;
+    }).immediate();
+    if (ran) applied.push(m.version);
   }
   return applied;
 }
