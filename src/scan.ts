@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
-import { type Finding, scrubJson, scrubJsonl, scrubText } from "./scrub.js";
+import { type Finding, scrubJsonSource, scrubJsonl, scrubText } from "./scrub.js";
 
 /** Where Claude Code keeps transcripts and auto memory. */
 export function defaultTranscriptsDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -39,11 +39,8 @@ function* walk(path: string): Generator<string> {
 export function scrubFileContent(path: string, content: string): Finding[] {
   if (path.endsWith(".jsonl")) return scrubJsonl(content).findings;
   if (path.endsWith(".json")) {
-    try {
-      return scrubJson(JSON.parse(content)).findings;
-    } catch {
-      // not valid JSON: fall through to text
-    }
+    const r = scrubJsonSource(content);
+    if (r) return r.findings; // not valid JSON: fall through to text
   }
   return scrubText(content).findings;
 }
