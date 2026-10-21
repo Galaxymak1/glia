@@ -124,6 +124,15 @@ describe("scrubText", () => {
     expect(scrubText(`key:\n${encrypted}\nend`).value).toBe("key:\n[REDACTED:private_key]\nend");
     const truncated = `-----BEGIN PRIVATE KEY-----\n${S.pemBody}\n${S.pemBody}`;
     expect(scrubText(truncated).value).toBe("[REDACTED:private_key]");
+    // Indented keys: a YAML block scalar, an indented code string, a JSON-escaped indented body.
+    const yaml = `tls:\n  key: |\n    -----BEGIN PRIVATE KEY-----\n    ${S.pemBody}\n    ${S.pemBody}\n    -----END PRIVATE KEY-----\n  cert: ok`;
+    expect(scrubText(yaml).value).toBe("tls:\n  key: |\n    [REDACTED:private_key]\n  cert: ok");
+    const code = `KEY = """-----BEGIN RSA PRIVATE KEY-----\n\t${S.pemBody}  \n\t-----END RSA PRIVATE KEY-----"""`;
+    expect(scrubText(code).value).toBe('KEY = """[REDACTED:private_key]"""');
+    const escaped = `-----BEGIN EC PRIVATE KEY-----\\n  ${S.pemBody}\\n  -----END EC PRIVATE KEY-----`;
+    expect(scrubText(escaped).value).toBe("[REDACTED:private_key]");
+    // A truncated key stops at the first line that is not part of it.
+    expect(scrubText(`-----BEGIN PRIVATE KEY-----\n${S.pemBody}\nnext: value`).value).toBe("[REDACTED:private_key]\nnext: value");
     // A half-written JSONL line (not valid JSON) keeps escaped line breaks.
     const brokenLine = `{"stdout":"-----BEGIN PRIVATE KEY-----\\n${S.pemBody}\\n${S.pemBody}`;
     expect(scrubJsonl(brokenLine).value).toBe(`{"stdout":"[REDACTED:private_key]`);
@@ -158,6 +167,8 @@ describe("scrubText", () => {
       "x://".repeat(50_000),
       "-----BEGIN RSA PRIVATE KEY-----\n".repeat(5_000),
       ("DB_PASSWORD=" + "a ".repeat(50)).repeat(1_000),
+      "-----BEGIN RSA PRIVATE KEY-----\n" + ("  \n" + "    A".repeat(10)).repeat(10_000),
+      "-----BEGIN RSA PRIVATE KEY-----\n" + (" ".repeat(50) + "\n").repeat(4_000),
       "mysql ".repeat(40_000),
       "curl ".repeat(40_000),
       "password='".repeat(20_000),
