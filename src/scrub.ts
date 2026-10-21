@@ -103,21 +103,26 @@ const group =
 const whole = group(0);
 const valueCheck = (g: number) => (m: RegExpExecArray) => (isSecretValue(m[g] ?? "") ? group(g)(m) : null);
 
+const PEM_BREAK = String.raw`(?:\r?\n|\\(?:r\\)?n)`;
+const PEM_HEADER = String.raw`(?:Proc-Type|DEK-Info|Comment):[^\n\\]*`;
+const PEM_LINE = String.raw`${PEM_HEADER}|[A-Za-z0-9+/=]+[ \t]*`;
+
 // Patterns that could start anywhere inside a run of word characters carry a
 // lookbehind, so a long run costs linear time instead of quadratic.
 const RULES: Rule[] = [
-  // Between the markers only header lines (`Proc-Type: ...`) and base64 lines, joined by real
-  // or JSON-escaped line breaks; the body needs a real base64 run, so code that only mentions
-  // the markers is kept.
+  // Between the markers: PEM header lines and base64 lines, each optionally indented (YAML
+  // blocks, heredocs, code strings), joined by real or JSON-escaped line breaks. Each run of
+  // spaces has exactly one place to go, so a failed match cannot backtrack. The body needs a
+  // real base64 run, so code that only mentions the markers is kept.
   {
     kind: "private_key",
-    re: /-----BEGIN ([A-Z ]*)PRIVATE KEY-----(?:[ \t]*(?:\r?\n|\\(?:r\\)?n)(?:[A-Za-z][\w-]*:[^\n\\]*|[A-Za-z0-9+/=]*))+?[ \t]*(?:\r?\n|\\(?:r\\)?n)-----END \1PRIVATE KEY-----/dg,
+    re: new RegExp(String.raw`-----BEGIN ([A-Z ]*)PRIVATE KEY-----[ \t]*(?:${PEM_BREAK}[ \t]*(?:${PEM_LINE})?)+?${PEM_BREAK}[ \t]*-----END \1PRIVATE KEY-----`, "dg"),
     pick: (m) => (/[A-Za-z0-9+/]{40}/.test(m[0]) ? whole(m) : null),
   },
-  // A truncated paste: the BEGIN line, optional headers and base64 lines, no END line.
+  // A truncated paste: the BEGIN line, then header and base64 lines, no END line.
   {
     kind: "private_key",
-    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[ \t]*(?:\r?\n|\\(?:r\\)?n)(?:[A-Za-z][\w-]*:[^\n\\]*|[A-Za-z0-9+/=]{16,}))+/dg,
+    re: new RegExp(String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----[ \t]*(?:${PEM_BREAK}[ \t]*(?:${PEM_HEADER}|[A-Za-z0-9+/=]{16,}[ \t]*))+`, "dg"),
     pick: (m) => (/[A-Za-z0-9+/]{40}/.test(m[0]) ? whole(m) : null),
   },
   { kind: "anthropic_key", re: /(?<![\w-])sk-ant-[A-Za-z0-9_-]{20,}/dg, pick: whole },
