@@ -1,0 +1,30 @@
+{
+  "name": "ai-second-brain",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Personal, self-hosted evidence ledger over Claude conversations",
+  "type": "module",
+  "bin": {
+    "brain": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "brain": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "sqlite-vec": "^0.1.9"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
