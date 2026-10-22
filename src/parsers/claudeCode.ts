@@ -15,6 +15,13 @@ const SESSION_PATH = new RegExp(String.raw`/projects/([^/]+)/(${UUID})\.jsonl$`)
 const SUBAGENT_PATH = new RegExp(String.raw`/projects/([^/]+)/(${UUID})/subagents/agent-([\w-]+)\.jsonl$`);
 const MEMORY_PATH = /\/projects\/([^/]+)\/memory\/([^/]+\.md)$/;
 
+const PROJECT_DIR = /\/projects\/([^/]+)\//;
+
+/** The Claude Code project folder of any path under `<config>/projects/<dir>/`; null outside it. Needs an absolute path. */
+export function claudeCodeProjectDir(path: string): string | null {
+  return PROJECT_DIR.exec(path)?.[1] ?? null;
+}
+
 /** Recognises a Claude Code file by where it sits under `<config>/projects/`; null for anything else. */
 export function classifyClaudeCodePath(path: string): ClaudeCodeFile | null {
   let m = SUBAGENT_PATH.exec(path);
@@ -47,6 +54,8 @@ export interface ParseStats {
   emptyTurns: number;
   /** Lines that are valid JSON but not an object, or turn lines without a uuid or message. */
   malformed: number;
+  /** Turn lines repeating a uuid already seen in the file; the last one wins. */
+  duplicates: number;
 }
 
 export interface ParsedSession {
@@ -113,7 +122,7 @@ function messageText(content: unknown, stats: ParseStats): { text: string; onlyT
 
 /** Parses a session or subagent transcript (JSONL, already scrubbed). */
 export function parseSession(text: string): ParsedSession {
-  const stats: ParseStats = { lines: 0, turns: 0, skippedTypes: {}, skippedBlocks: {}, emptyTurns: 0, malformed: 0 };
+  const stats: ParseStats = { lines: 0, turns: 0, skippedTypes: {}, skippedBlocks: {}, emptyTurns: 0, malformed: 0, duplicates: 0 };
   // Every line's parent link, turns or not, so a turn's parent can be resolved past skipped lines.
   const parentOf = new Map<string, string | null>();
   const candidates: (ParsedTurn & { rawParent: string | null })[] = [];
@@ -168,15 +177,43 @@ export function parseSession(text: string): ParsedSession {
     });
   }
 
-  const stored = new Set(candidates.map((t) => t.externalUuid));
-  const turns: ParsedTurn[] = candidates.map(({ rawParent, ...turn }) => {
-    let p = rawParent;
-    const seen = new Set<string>();
-    while (p && !stored.has(p) && !seen.has(p)) {
-      seen.add(p);
+  // A repeated uuid keeps its last line, like the upsert would.
+  const byUuid = new Map<string, (typeof candidates)[number]>();
+  for (const c of candidates) {
+    if (byUuid.has(c.externalUuid)) {
+      stats.duplicates++;
+      byUuid.delete(c.externalUuid); // re-insert: the kept line takes the later position
+    }
+    byUuid.set(c.externalUuid, c);
+  }
+  const stored = new Set(byUuid.keys());
+  // Nearest stored ancestor of each line, memoized so long runs of skipped lines are walked once.
+  const resolved = new Map<string, string | null>();
+  const nearestStored = (start: string | null): string | null => {
+    const path: string[] = [];
+    const onPath = new Set<string>();
+    let p = start;
+    let found: string | null = null;
+    while (p) {
+      if (stored.has(p)) {
+        found = p;
+        break;
+      }
+      if (resolved.has(p)) {
+        found = resolved.get(p)!;
+        break;
+      }
+      if (onPath.has(p)) break; // a cycle among skipped lines: no stored ancestor
+      onPath.add(p);
+      path.push(p);
       p = parentOf.get(p) ?? null;
     }
-    return { ...turn, parentUuid: p && stored.has(p) ? p : null };
+    for (const q of path) resolved.set(q, found);
+    return found;
+  };
+  const turns: ParsedTurn[] = [...byUuid.values()].map(({ rawParent, ...turn }) => {
+    const parent = rawParent === turn.externalUuid ? null : nearestStored(rawParent);
+    return { ...turn, parentUuid: parent === turn.externalUuid ? null : parent };
   });
   stats.turns = turns.length;
   const times = turns.map((t) => t.ts).filter((t): t is string => !!t).sort();
@@ -185,7 +222,7 @@ export function parseSession(text: string): ParsedSession {
 
 /** An auto memory file becomes one turn holding the whole file. */
 export function parseMemory(text: string, name: string): ParsedSession {
-  const stats: ParseStats = { lines: 0, turns: 0, skippedTypes: {}, skippedBlocks: {}, emptyTurns: 0, malformed: 0 };
+  const stats: ParseStats = { lines: 0, turns: 0, skippedTypes: {}, skippedBlocks: {}, emptyTurns: 0, malformed: 0, duplicates: 0 };
   const turns: ParsedTurn[] = text.trim() ? [{ externalUuid: name, parentUuid: null, role: "memory", ts: null, text, isSidechain: false }] : [];
   stats.turns = turns.length;
   const title = /^name:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? name;

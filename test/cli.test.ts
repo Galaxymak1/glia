@@ -1,6 +1,8 @@
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -90,6 +92,38 @@ describe("brain ingest", () => {
 
   it("needs a path", () => {
     expect(() => brain("ingest", "--db", join(dir, "x.db"))).toThrow(/needs at least one path/);
+  });
+});
+
+describe("brain ingest of Claude Code projects", () => {
+  const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
+  const session = JSON.stringify({ type: "user", uuid: "u1", parentUuid: null, sessionId: S, message: { content: "hello" } }) + "\n";
+  const makeProjects = (root: string) => {
+    for (const project of ["-home-me-dev-brain", "-home-me-work-acme"]) {
+      mkdirSync(join(root, "projects", project, S, "tool-results"), { recursive: true });
+      writeFileSync(join(root, "projects", project, `${S}.jsonl`), session);
+      writeFileSync(join(root, "projects", project, S, "tool-results", "out.txt"), `output of ${project}\n`);
+    }
+  };
+
+  it("parses from a relative path and keeps every file of an excluded project out of the store", () => {
+    const root = join(dir, "cc-home");
+    makeProjects(root);
+    const config = join(dir, "cc-config.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    const db = join(dir, "cc-db", "brain.db");
+    // Run from inside the folder; tsx is loaded by absolute path since the cwd has no node_modules.
+    const tsx = pathToFileURL(join(process.cwd(), "node_modules/tsx/dist/loader.mjs")).href;
+    const out = execFileSync(process.execPath, ["--import", tsx, join(process.cwd(), "src/cli.ts"), "ingest", "--db", db, "projects"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...env, BRAIN_CONFIG: config },
+    });
+    expect(out).toMatch(/^Stored 2 new files .*; 2 in excluded projects\n/);
+    expect(out).toMatch(/\nParsed 1 sessions, 0 subagent transcripts, 0 memory files \(1 turns written, 0 removed\)/);
+    const stored = readdirSync(join(dir, "cc-db", "raw"), { recursive: true }).filter((f) => String(f).endsWith(".gz"));
+    const contents = stored.map((f) => gunzipSync(readFileSync(join(dir, "cc-db", "raw", String(f)))).toString("utf8"));
+    expect(contents.some((c) => c.includes("acme"))).toBe(false);
   });
 });
 

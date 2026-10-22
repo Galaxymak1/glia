@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyClaudeCodePath, parseMemory, parseSession } from "../src/parsers/claudeCode.js";
+import { claudeCodeProjectDir, classifyClaudeCodePath, parseMemory, parseSession } from "../src/parsers/claudeCode.js";
 
 const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
 const base = { sessionId: S, cwd: "/home/me/dev/brain", gitBranch: "master", version: "2.1.303", entrypoint: "cli", isSidechain: false };
@@ -74,6 +74,7 @@ describe("parseSession", () => {
       skippedBlocks: { thinking: 2, server_widget: 1 },
       emptyTurns: 1,
       malformed: 2,
+      duplicates: 0,
     });
   });
 
@@ -85,6 +86,49 @@ describe("parseSession", () => {
 
   it("parses an empty file to nothing", () => {
     expect(parseSession("").turns).toEqual([]);
+  });
+});
+
+describe("parseSession edge cases", () => {
+  const t = (uuid: string, parent: string | null, extra: object = {}) =>
+    line({ type: "user", uuid, parentUuid: parent, message: { content: `text ${uuid}` }, ...extra });
+
+  it("never links a turn to itself, even through a cycle of skipped lines", () => {
+    const text = [
+      t("self", "self"),
+      line({ type: "system", uuid: "x", parentUuid: "y" }),
+      line({ type: "system", uuid: "y", parentUuid: "x" }),
+      t("loop", "x"),
+    ].join("\n");
+    expect(parseSession(text).turns.map((x) => [x.externalUuid, x.parentUuid])).toEqual([["self", null], ["loop", null]]);
+  });
+
+  it("counts a repeated uuid and keeps its last line", () => {
+    const parsed = parseSession([t("u1", null), t("u1", null, { message: { content: "rewritten" } })].join("\n"));
+    expect(parsed.stats.duplicates).toBe(1);
+    expect(parsed.turns.map((x) => x.text)).toEqual(["rewritten"]);
+  });
+
+  it("resolves parents past long runs of skipped lines in linear time", () => {
+    const lines = [t("root", null)];
+    let prev = "root";
+    for (let i = 0; i < 50_000; i++) {
+      lines.push(line({ type: "system", uuid: `s${i}`, parentUuid: prev }));
+      prev = `s${i}`;
+    }
+    for (let i = 0; i < 2_000; i++) lines.push(t(`leaf${i}`, prev));
+    const started = performance.now();
+    const parsed = parseSession(lines.join("\n"));
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(new Set(parsed.turns.slice(1).map((x) => x.parentUuid))).toEqual(new Set(["root"]));
+  });
+});
+
+describe("claudeCodeProjectDir", () => {
+  it("finds the project folder of any file under projects/", () => {
+    expect(claudeCodeProjectDir(`/h/.claude/projects/-home-me-work/${S}/tool-results/out.txt`)).toBe("-home-me-work");
+    expect(claudeCodeProjectDir("/h/.claude/projects/-home-me-work/x/subagents/agent-1.meta.json")).toBe("-home-me-work");
+    expect(claudeCodeProjectDir("projects/-home-me-work/a.jsonl")).toBeNull(); // relative: callers resolve first
   });
 });
 

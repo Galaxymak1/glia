@@ -22,15 +22,19 @@ interface ExistingSource {
   raw_sha256: string;
   parser_version: string;
   received_at: string | null;
+  updated_at: string | null;
+  turns: number;
 }
 
 /**
- * Parses `raw` into sources and turns if it is a Claude Code file; null for other files.
- * A source is re-parsed when its newest copy or the parser version changed. An older copy
- * of a source already parsed from a newer one is left alone.
+ * Parses `raw`, read from `path` (absolute), into sources and turns if it is a Claude Code
+ * file; null for other files. A source is re-parsed when its content or the parser version
+ * changed. A copy older than the one already parsed is left alone: for transcripts, which
+ * only grow, "older" means fewer turns or an earlier last turn, whatever order the copies
+ * arrive in; for memory files, which are edited in place, the copy received last wins.
  */
-export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore, raw: RawFile, config: Config): IndexResult | null {
-  const file = classifyClaudeCodePath(raw.origin_path);
+export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore, raw: RawFile, config: Config, path: string): IndexResult | null {
+  const file = classifyClaudeCodePath(path);
   if (!file) return null;
   const result = (status: IndexStatus): IndexResult => ({ status, kind: file.kind, turnsWritten: 0, turnsRemoved: 0 });
   if (isExcludedProject(file.projectDir, config)) return result("excluded");
@@ -41,16 +45,21 @@ export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore,
 
   const existing = db
     .prepare(
-      `SELECT s.id, s.raw_sha256, s.parser_version, r.received_at
+      `SELECT s.id, s.raw_sha256, s.parser_version, s.updated_at, r.received_at,
+              (SELECT count(*) FROM turns t WHERE t.source_id = s.id) AS turns
          FROM sources s LEFT JOIN raw_files r ON r.sha256 = s.raw_sha256
         WHERE s.kind = ? AND s.external_id = ?`,
     )
     .get(kind, externalId) as ExistingSource | undefined;
   if (existing?.raw_sha256 === raw.sha256 && existing.parser_version === CC_PARSER_VERSION) return result("unchanged");
-  if (existing && existing.raw_sha256 !== raw.sha256 && existing.received_at && existing.received_at > raw.received_at) return result("older");
+  const otherCopy = existing && existing.raw_sha256 !== raw.sha256;
+  if (otherCopy && file.kind === "memory" && existing.received_at && existing.received_at > raw.received_at) return result("older");
 
   const text = store.read(raw.sha256);
   const parsed = file.kind === "memory" ? parseMemory(text, file.name) : parseSession(text);
+  if (otherCopy && file.kind !== "memory" && (parsed.turns.length < existing.turns || (parsed.updatedAt ?? "") < (existing.updated_at ?? ""))) {
+    return result("older");
+  }
 
   return db.transaction((): IndexResult => {
     const source = {
