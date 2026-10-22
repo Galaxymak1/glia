@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, relative, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
 import { type Config, isExcludedPath, loadConfig } from "./config.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
@@ -74,8 +74,8 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           continue;
         }
         // Nothing from an excluded project reaches the store, whatever the file: checked on
-        // every folder of both the real path and its projects/ view.
-        if (isExcludedPath(path, config) || isExcludedPath(view(path), config)) {
+        // every folder from the root down, and on the projects/ view, which names the project.
+        if (isExcludedPath(relative(root, path), config) || isExcludedPath(view(path), config)) {
           excluded++;
           continue;
         }

@@ -162,6 +162,19 @@ describe("brain ingest of Claude Code projects", () => {
     }
   });
 
+  it("ignores folders above the ingested root when excluding", () => {
+    const root = join(dir, "-home-me-work-archive");
+    makeProjects(root);
+    const config = join(dir, "cc-config5.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    const out = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", join(dir, "cc-db5", "brain.db"), join(root, "projects")], {
+      encoding: "utf8",
+      env: { ...env, BRAIN_CONFIG: config },
+    });
+    expect(out).toMatch(/^Stored 2 new files .*; 2 in excluded projects\n/); // only -home-me-work-acme's files
+    expect(out).toMatch(/\nParsed 1 sessions/);
+  });
+
   it("applies exclusion and parsing through a symlink and in a copy under another name", () => {
     const root = join(dir, "cc-home2");
     makeProjects(root);

@@ -131,6 +131,7 @@ describe("isExcludedPath", () => {
       `/backup/mixed/-home-me-work-acme/memory/x.md`,
     ]) expect(isExcludedPath(p, config)).toBe(true);
     expect(isExcludedPath(`/projects/-home-me-dev/${S2}.jsonl`, config)).toBe(false);
+    expect(isExcludedPath("/projects/-home-me-dev/memory/-home-me-work-notes.md", config)).toBe(false); // a file name is not a folder
   });
 });
 
