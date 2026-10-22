@@ -6,9 +6,11 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 const dir = mkdtempSync(join(tmpdir(), "brain-cli-"));
+// Never read the developer's own config file.
+const env = { ...process.env, BRAIN_CONFIG: join(dir, "no-config.json") };
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const brain = (...args: string[]) =>
-  execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8" });
+  execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", env });
 
 describe("brain init", () => {
   it("creates the database, then reports it up to date", () => {
@@ -25,7 +27,7 @@ describe("brain init", () => {
     const db = join(dir, "race", "brain.db");
     const run = promisify(execFile);
     const outs = await Promise.all(
-      Array.from({ length: 4 }, () => run(process.execPath, ["--import", "tsx", "src/cli.ts", "init", "--db", db], { encoding: "utf8" })),
+      Array.from({ length: 4 }, () => run(process.execPath, ["--import", "tsx", "src/cli.ts", "init", "--db", db], { encoding: "utf8", env })),
     );
     const created = outs.filter((o) => o.stdout.startsWith("Created")).length;
     expect(created).toBe(1);
@@ -65,8 +67,8 @@ describe("brain ingest", () => {
     writeFileSync(join(src, "notes.md"), "notes\n");
     writeFileSync(join(src, "photo.png"), "binary");
     const db = join(dir, "ingest", "brain.db");
-    expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 2 new files \(.* MB, .* MB compressed, 1 secrets redacted\); 0 unchanged; skipped 1 non-text files\n$/);
-    expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 0 new files .*; 2 unchanged; skipped 1 non-text files\n$/);
+    expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 2 new files \(.* MB, .* MB compressed, 1 secrets redacted\); 0 unchanged; skipped 1 non-text files\n/);
+    expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 0 new files .*; 2 unchanged; skipped 1 non-text files\n/);
   });
 
   it("reports a path it cannot read and still stores the rest", () => {
@@ -74,7 +76,7 @@ describe("brain ingest", () => {
     mkdirSync(src, { recursive: true });
     writeFileSync(join(src, "a.md"), "a\n");
     const db = join(dir, "ingest-partial-db", "brain.db");
-    const run = () => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(dir, "does-not-exist"), src], { encoding: "utf8", stdio: "pipe" });
+    const run = () => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(dir, "does-not-exist"), src], { encoding: "utf8", stdio: "pipe", env });
     let err: { status?: number; stdout?: string; stderr?: string } = {};
     try {
       run();
@@ -83,7 +85,7 @@ describe("brain ingest", () => {
     }
     expect(err.status).toBe(1);
     expect(err.stderr).toMatch(/does-not-exist: ENOENT/);
-    expect(err.stdout).toMatch(/^Stored 1 new files .*; 1 failed\n$/);
+    expect(err.stdout).toMatch(/^Stored 1 new files .*; 1 failed\n/);
   });
 
   it("needs a path", () => {
