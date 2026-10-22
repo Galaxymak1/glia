@@ -91,6 +91,29 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    name: "raw file registry",
+    sql: `
+      -- One row per distinct raw file received, keyed by the SHA-256 of its original
+      -- bytes. The stored copy is scrubbed, then gzip-compressed under raw/ (SPEC.md,
+      -- "Evidence layer"); stored_sha256 is the hash of that scrubbed content.
+      -- A claude.ai export holds many conversations, so a raw file can back many sources:
+      -- sources.raw_sha256 points here.
+      CREATE TABLE raw_files (
+        sha256           TEXT    PRIMARY KEY,
+        stored_path      TEXT    NOT NULL,
+        stored_sha256    TEXT    NOT NULL,
+        origin_path      TEXT    NOT NULL,
+        bytes            INTEGER NOT NULL,
+        stored_bytes     INTEGER NOT NULL,
+        redactions       INTEGER NOT NULL,
+        scrubber_version TEXT    NOT NULL,
+        received_at      TEXT    NOT NULL
+      );
+      CREATE INDEX raw_files_origin ON raw_files (origin_path, received_at);
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {
