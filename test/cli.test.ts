@@ -1,14 +1,18 @@
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 const dir = mkdtempSync(join(tmpdir(), "brain-cli-"));
+// Never read the developer's own config file.
+const env = { ...process.env, BRAIN_CONFIG: join(dir, "no-config.json") };
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const brain = (...args: string[]) =>
-  execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8" });
+  execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", env });
 
 describe("brain init", () => {
   it("creates the database, then reports it up to date", () => {
@@ -25,7 +29,7 @@ describe("brain init", () => {
     const db = join(dir, "race", "brain.db");
     const run = promisify(execFile);
     const outs = await Promise.all(
-      Array.from({ length: 4 }, () => run(process.execPath, ["--import", "tsx", "src/cli.ts", "init", "--db", db], { encoding: "utf8" })),
+      Array.from({ length: 4 }, () => run(process.execPath, ["--import", "tsx", "src/cli.ts", "init", "--db", db], { encoding: "utf8", env })),
     );
     const created = outs.filter((o) => o.stdout.startsWith("Created")).length;
     expect(created).toBe(1);
@@ -65,8 +69,8 @@ describe("brain ingest", () => {
     writeFileSync(join(src, "notes.md"), "notes\n");
     writeFileSync(join(src, "photo.png"), "binary");
     const db = join(dir, "ingest", "brain.db");
-    expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 2 new files \(.* MB, .* MB compressed, 1 secrets redacted\); 0 unchanged; skipped 1 non-text files\n$/);
-    expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 0 new files .*; 2 unchanged; skipped 1 non-text files\n$/);
+    expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 2 new files \(.* MB, .* MB compressed, 1 secrets redacted\); 0 unchanged; skipped 1 non-text files\n/);
+    expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 0 new files .*; 2 unchanged; skipped 1 non-text files\n/);
   });
 
   it("reports a path it cannot read and still stores the rest", () => {
@@ -74,7 +78,7 @@ describe("brain ingest", () => {
     mkdirSync(src, { recursive: true });
     writeFileSync(join(src, "a.md"), "a\n");
     const db = join(dir, "ingest-partial-db", "brain.db");
-    const run = () => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(dir, "does-not-exist"), src], { encoding: "utf8", stdio: "pipe" });
+    const run = () => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(dir, "does-not-exist"), src], { encoding: "utf8", stdio: "pipe", env });
     let err: { status?: number; stdout?: string; stderr?: string } = {};
     try {
       run();
@@ -83,11 +87,110 @@ describe("brain ingest", () => {
     }
     expect(err.status).toBe(1);
     expect(err.stderr).toMatch(/does-not-exist: ENOENT/);
-    expect(err.stdout).toMatch(/^Stored 1 new files .*; 1 failed\n$/);
+    expect(err.stdout).toMatch(/^Stored 1 new files .*; 1 failed\n/);
   });
 
   it("needs a path", () => {
     expect(() => brain("ingest", "--db", join(dir, "x.db"))).toThrow(/needs at least one path/);
+  });
+});
+
+describe("brain ingest of Claude Code projects", () => {
+  const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
+  const session = JSON.stringify({ type: "user", uuid: "u1", parentUuid: null, sessionId: S, message: { content: "hello" } }) + "\n";
+  const makeProjects = (root: string) => {
+    for (const project of ["-home-me-dev-brain", "-home-me-work-acme"]) {
+      mkdirSync(join(root, "projects", project, S, "tool-results"), { recursive: true });
+      writeFileSync(join(root, "projects", project, `${S}.jsonl`), session);
+      writeFileSync(join(root, "projects", project, S, "tool-results", "out.txt"), `output of ${project}\n`);
+    }
+  };
+
+  it("parses from a relative path and keeps every file of an excluded project out of the store", () => {
+    const root = join(dir, "cc-home");
+    makeProjects(root);
+    const config = join(dir, "cc-config.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    const db = join(dir, "cc-db", "brain.db");
+    // Run from inside the folder; tsx is loaded by absolute path since the cwd has no node_modules.
+    const tsx = pathToFileURL(join(process.cwd(), "node_modules/tsx/dist/loader.mjs")).href;
+    const out = execFileSync(process.execPath, ["--import", tsx, join(process.cwd(), "src/cli.ts"), "ingest", "--db", db, "projects"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...env, BRAIN_CONFIG: config },
+    });
+    expect(out).toMatch(/^Stored 2 new files .*; 2 in excluded projects\n/);
+    expect(out).toMatch(/\nParsed 1 sessions, 0 subagent transcripts, 0 memory files \(1 turns written, 0 removed\)/);
+    const stored = readdirSync(join(dir, "cc-db", "raw"), { recursive: true }).filter((f) => String(f).endsWith(".gz"));
+    const contents = stored.map((f) => gunzipSync(readFileSync(join(dir, "cc-db", "raw", String(f)))).toString("utf8"));
+    expect(contents.some((c) => c.includes("acme"))).toBe(false);
+  });
+
+  it("excludes a copied single project folder and a lone session file copied outside projects/", () => {
+    const root = join(dir, "cc-home3");
+    makeProjects(root);
+    const backup = join(dir, "backup3");
+    cpSync(join(root, "projects", "-home-me-work-acme"), join(backup, "-home-me-work-acme"), { recursive: true });
+    mkdirSync(join(backup, "lone", "-home-me-work-acme"), { recursive: true });
+    cpSync(join(root, "projects", "-home-me-work-acme", `${S}.jsonl`), join(backup, "lone", "-home-me-work-acme", `${S}.jsonl`));
+    const config = join(dir, "cc-config3.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    const db = join(dir, "cc-db3", "brain.db");
+    const run = (target: string) =>
+      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, target], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+    expect(run(join(backup, "-home-me-work-acme"))).toMatch(/^Stored 0 new files .*; 2 in excluded projects\n/);
+    expect(run(join(backup, "lone", "-home-me-work-acme", `${S}.jsonl`))).toMatch(/^Stored 0 new files .*; 1 in excluded projects\n/);
+  });
+
+  it("keeps out a projects/ folder nested inside an excluded project, and an excluded folder inside a mixed root", () => {
+    const root = join(dir, "cc-home4");
+    makeProjects(root);
+    const nested = join(root, "projects", "-home-me-work-acme", S, "tool-results", "projects", "foo");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, "x.txt"), "acme nested\n");
+    const mixed = join(dir, "mixed4");
+    cpSync(join(root, "projects"), mixed, { recursive: true });
+    writeFileSync(join(mixed, `${S}.jsonl`), session); // makes the root look like a single project
+    const config = join(dir, "cc-config4.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    for (const target of [join(root, "projects"), mixed]) {
+      const db = join(dir, `cc-db4-${target === mixed ? "mixed" : "tree"}`, "brain.db");
+      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, target], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+      const raw = join(dirname(db), "raw");
+      const stored = readdirSync(raw, { recursive: true }).filter((f) => String(f).endsWith(".gz"));
+      expect(stored.map((f) => gunzipSync(readFileSync(join(raw, String(f)))).toString("utf8")).some((c) => c.includes("acme"))).toBe(false);
+    }
+  });
+
+  it("ignores folders above the ingested root when excluding", () => {
+    const root = join(dir, "-home-me-work-archive");
+    makeProjects(root);
+    const config = join(dir, "cc-config5.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    const out = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", join(dir, "cc-db5", "brain.db"), join(root, "projects")], {
+      encoding: "utf8",
+      env: { ...env, BRAIN_CONFIG: config },
+    });
+    expect(out).toMatch(/^Stored 2 new files .*; 2 in excluded projects\n/); // only -home-me-work-acme's files
+    expect(out).toMatch(/\nParsed 1 sessions/);
+  });
+
+  it("applies exclusion and parsing through a symlink and in a copy under another name", () => {
+    const root = join(dir, "cc-home2");
+    makeProjects(root);
+    symlinkSync(join(root, "projects"), join(root, "link"));
+    cpSync(join(root, "projects"), join(root, "spool"), { recursive: true });
+    const config = join(dir, "cc-config2.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    for (const folder of ["link", "spool"]) {
+      const db = join(dir, `cc-db-${folder}`, "brain.db");
+      const run = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(root, folder)], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+      expect(run).toMatch(/2 in excluded projects/);
+      expect(run).toMatch(/\nParsed 1 sessions/);
+      const raw = join(dir, `cc-db-${folder}`, "raw");
+      const stored = readdirSync(raw, { recursive: true }).filter((f) => String(f).endsWith(".gz"));
+      expect(stored.map((f) => gunzipSync(readFileSync(join(raw, String(f)))).toString("utf8")).some((c) => c.includes("acme"))).toBe(false);
+    }
   });
 });
 
