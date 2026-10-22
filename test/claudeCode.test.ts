@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claudeCodeProjectDir, classifyClaudeCodePath, parseMemory, parseSession, projectsView } from "../src/parsers/claudeCode.js";
+import { claudeCodeProjectDir, classifyClaudeCodePath, looksLikeProjectFolder, parseMemory, parseSession, projectsView } from "../src/parsers/claudeCode.js";
 
 const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
 const base = { sessionId: S, cwd: "/home/me/dev/brain", gitBranch: "master", version: "2.1.303", entrypoint: "cli", isSidechain: false };
@@ -129,6 +129,7 @@ describe("claudeCodeProjectDir", () => {
     expect(claudeCodeProjectDir(`/h/.claude/projects/-home-me-work/${S}/tool-results/out.txt`)).toBe("-home-me-work");
     expect(claudeCodeProjectDir("/h/.claude/projects/-home-me-work/x/subagents/agent-1.meta.json")).toBe("-home-me-work");
     expect(claudeCodeProjectDir("projects/-home-me-work/a.jsonl")).toBeNull(); // relative: callers resolve first
+    expect(claudeCodeProjectDir("/projects/sub/projects/-home-me-work/a.jsonl")).toBe("-home-me-work"); // innermost wins
   });
 });
 
@@ -142,6 +143,18 @@ describe("projectsView", () => {
     const file = `/h/.claude/projects/${f}`;
     expect(projectsView(file, file)(file)).toBe(`/projects/${f}`);
     expect(projectsView("/h/projects/x/.claude/projects", "/h/projects/x/.claude/projects")(`/h/projects/x/.claude/projects/${f}`)).toBe(`/projects/${f}`);
+  });
+
+  it("names a copied single project folder after itself, and a lone session file after its parent", () => {
+    expect(projectsView("/backup/-home-me-work", "/backup/-home-me-work", "project-folder")(`/backup/-home-me-work/${S}.jsonl`)).toBe(`/projects/-home-me-work/${S}.jsonl`);
+    const lone = `/tmp/-home-me-work/${S}.jsonl`;
+    expect(projectsView(lone, lone, "session-file")(lone)).toBe(`/projects/-home-me-work/${S}.jsonl`);
+  });
+
+  it("recognises a project folder by its contents", () => {
+    expect(looksLikeProjectFolder([`${S}.jsonl`, "notes.txt"])).toBe(true);
+    expect(looksLikeProjectFolder(["memory"])).toBe(true);
+    expect(looksLikeProjectFolder(["-home-me-work", "-home-me-dev"])).toBe(false);
   });
 });
 

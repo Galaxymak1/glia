@@ -3,7 +3,7 @@
 // skipped and counted, never fatal; the raw file stays in the evidence store, so nothing
 // skipped here is lost.
 
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 
 export const CC_PARSER_VERSION = "cc@1";
 
@@ -17,25 +17,44 @@ const SESSION_PATH = new RegExp(String.raw`/projects/([^/]+)/(${UUID})\.jsonl$`)
 const SUBAGENT_PATH = new RegExp(String.raw`/projects/([^/]+)/(${UUID})/subagents/agent-([\w-]+)\.jsonl$`);
 const MEMORY_PATH = /\/projects\/([^/]+)\/memory\/([^/]+\.md)$/;
 
-const PROJECT_DIR = /\/projects\/([^/]+)\//;
+// Greedy: the innermost projects/<dir>/ wins when folders called "projects" are nested.
+const PROJECT_DIR = /.*\/projects\/([^/]+)\//;
 
 /** The Claude Code project folder of any path under `<config>/projects/<dir>/`; null outside it. Needs an absolute path. */
 export function claudeCodeProjectDir(path: string): string | null {
   return PROJECT_DIR.exec(path)?.[1] ?? null;
 }
 
+/** What a root outside any `projects/` folder holds, as seen by the caller on disk. */
+export type RootShape = "projects-folder" | "project-folder" | "session-file";
+
 /**
  * Maps a file found while walking `root` to the path the Claude Code rules read,
  * `/projects/<dir>/...`. `realRoot` is `root` with symlinks resolved. A root inside a
- * `projects/` folder keeps its place there; any other root is taken to be a projects folder
- * itself (a copy, a spool, a symlink target under another name), so exclusion and parsing
- * never depend on what the folder is called.
+ * `projects/` folder keeps its place there. Any other root is placed by its `shape`: a
+ * single project folder (it holds sessions or `memory/` directly) is named after itself, a
+ * lone session file after its parent folder, and anything else is taken to be a projects
+ * folder (a copy, a spool, a symlink target). Exclusion and parsing therefore never depend
+ * on what the folder is called.
  */
-export function projectsView(root: string, realRoot: string): (path: string) => string {
+export function projectsView(root: string, realRoot: string, shape: RootShape = "projects-folder"): (path: string) => string {
   const at = realRoot.lastIndexOf("/projects/");
-  const prefix = realRoot.endsWith("/projects") || at < 0 ? "" : realRoot.slice(at + "/projects/".length);
+  let prefix: string;
+  if (realRoot.endsWith("/projects")) prefix = "";
+  else if (at >= 0) prefix = realRoot.slice(at + "/projects/".length);
+  else if (shape === "project-folder") prefix = basename(realRoot);
+  else if (shape === "session-file") prefix = join(basename(dirname(realRoot)), basename(realRoot));
+  else prefix = "";
   return (path) => join("/projects", prefix, relative(root, path));
 }
+
+/** Whether a folder looks like one Claude Code project: session files or a memory/ folder directly in it. */
+export function looksLikeProjectFolder(entries: string[]): boolean {
+  return entries.some((name) => name === "memory" || new RegExp(`^${UUID}\\.jsonl$`).test(name));
+}
+
+/** Whether a file name is a Claude Code session file. */
+export const isSessionFileName = (name: string) => new RegExp(`^${UUID}\\.jsonl$`).test(name);
 
 /** Recognises a Claude Code file by where it sits under `<config>/projects/`; null for anything else. */
 export function classifyClaudeCodePath(path: string): ClaudeCodeFile | null {
