@@ -4,7 +4,7 @@ import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, syml
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 const dir = mkdtempSync(join(tmpdir(), "brain-cli-"));
@@ -140,6 +140,26 @@ describe("brain ingest of Claude Code projects", () => {
       execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, target], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
     expect(run(join(backup, "-home-me-work-acme"))).toMatch(/^Stored 0 new files .*; 2 in excluded projects\n/);
     expect(run(join(backup, "lone", "-home-me-work-acme", `${S}.jsonl`))).toMatch(/^Stored 0 new files .*; 1 in excluded projects\n/);
+  });
+
+  it("keeps out a projects/ folder nested inside an excluded project, and an excluded folder inside a mixed root", () => {
+    const root = join(dir, "cc-home4");
+    makeProjects(root);
+    const nested = join(root, "projects", "-home-me-work-acme", S, "tool-results", "projects", "foo");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, "x.txt"), "acme nested\n");
+    const mixed = join(dir, "mixed4");
+    cpSync(join(root, "projects"), mixed, { recursive: true });
+    writeFileSync(join(mixed, `${S}.jsonl`), session); // makes the root look like a single project
+    const config = join(dir, "cc-config4.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    for (const target of [join(root, "projects"), mixed]) {
+      const db = join(dir, `cc-db4-${target === mixed ? "mixed" : "tree"}`, "brain.db");
+      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, target], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+      const raw = join(dirname(db), "raw");
+      const stored = readdirSync(raw, { recursive: true }).filter((f) => String(f).endsWith(".gz"));
+      expect(stored.map((f) => gunzipSync(readFileSync(join(raw, String(f)))).toString("utf8")).some((c) => c.includes("acme"))).toBe(false);
+    }
   });
 
   it("applies exclusion and parsing through a symlink and in a copy under another name", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claudeCodeProjectDir, classifyClaudeCodePath, looksLikeProjectFolder, parseMemory, parseSession, projectsView } from "../src/parsers/claudeCode.js";
+import { classifyClaudeCodePath, looksLikeProjectFolder, parseMemory, parseSession, projectsView } from "../src/parsers/claudeCode.js";
 
 const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
 const base = { sessionId: S, cwd: "/home/me/dev/brain", gitBranch: "master", version: "2.1.303", entrypoint: "cli", isSidechain: false };
@@ -121,15 +121,6 @@ describe("parseSession edge cases", () => {
     const parsed = parseSession(lines.join("\n"));
     expect(performance.now() - started).toBeLessThan(2_000);
     expect(new Set(parsed.turns.slice(1).map((x) => x.parentUuid))).toEqual(new Set(["root"]));
-  });
-});
-
-describe("claudeCodeProjectDir", () => {
-  it("finds the project folder of any file under projects/", () => {
-    expect(claudeCodeProjectDir(`/h/.claude/projects/-home-me-work/${S}/tool-results/out.txt`)).toBe("-home-me-work");
-    expect(claudeCodeProjectDir("/h/.claude/projects/-home-me-work/x/subagents/agent-1.meta.json")).toBe("-home-me-work");
-    expect(claudeCodeProjectDir("projects/-home-me-work/a.jsonl")).toBeNull(); // relative: callers resolve first
-    expect(claudeCodeProjectDir("/projects/sub/projects/-home-me-work/a.jsonl")).toBe("-home-me-work"); // innermost wins
   });
 });
 

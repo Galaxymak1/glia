@@ -44,3 +44,12 @@ export function isExcludedProject(projectDir: string, config: Config): boolean {
     return re.test(projectDir);
   });
 }
+
+/**
+ * Whether any folder on `path` matches an exclusion pattern. Fails closed: wherever an
+ * excluded project's folder appears in a path (nested, copied, under another projects/),
+ * the file is out.
+ */
+export function isExcludedPath(path: string, config: Config): boolean {
+  return path.split("/").some((segment) => segment !== "" && isExcludedProject(segment, config));
+}

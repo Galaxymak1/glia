@@ -17,14 +17,6 @@ const SESSION_PATH = new RegExp(String.raw`/projects/([^/]+)/(${UUID})\.jsonl$`)
 const SUBAGENT_PATH = new RegExp(String.raw`/projects/([^/]+)/(${UUID})/subagents/agent-([\w-]+)\.jsonl$`);
 const MEMORY_PATH = /\/projects\/([^/]+)\/memory\/([^/]+\.md)$/;
 
-// Greedy: the innermost projects/<dir>/ wins when folders called "projects" are nested.
-const PROJECT_DIR = /.*\/projects\/([^/]+)\//;
-
-/** The Claude Code project folder of any path under `<config>/projects/<dir>/`; null outside it. Needs an absolute path. */
-export function claudeCodeProjectDir(path: string): string | null {
-  return PROJECT_DIR.exec(path)?.[1] ?? null;
-}
-
 /** What a root outside any `projects/` folder holds, as seen by the caller on disk. */
 export type RootShape = "projects-folder" | "project-folder" | "session-file";
 

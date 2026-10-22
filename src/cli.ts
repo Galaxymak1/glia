@@ -3,9 +3,9 @@ import { parseArgs } from "node:util";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
-import { type Config, isExcludedProject, loadConfig } from "./config.js";
+import { type Config, isExcludedPath, loadConfig } from "./config.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
-import { claudeCodeProjectDir, isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
+import { isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
 import { indexClaudeCodeFile } from "./sources.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
@@ -73,9 +73,9 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           skipped++;
           continue;
         }
-        // Nothing from an excluded project reaches the store, whatever the file.
-        const projectDir = claudeCodeProjectDir(view(path));
-        if (projectDir && isExcludedProject(projectDir, config)) {
+        // Nothing from an excluded project reaches the store, whatever the file: checked on
+        // every folder of both the real path and its projects/ view.
+        if (isExcludedPath(path, config) || isExcludedPath(view(path), config)) {
           excluded++;
           continue;
         }
