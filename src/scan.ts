@@ -1,7 +1,7 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { type Dirent, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
-import { type Finding, scrubJsonSource, scrubJsonl, scrubText } from "./scrub.js";
+import { type Finding, type ScrubResult, scrubJsonSource, scrubJsonl, scrubText } from "./scrub.js";
 
 /** Where Claude Code keeps transcripts and auto memory. */
 export function defaultTranscriptsDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -9,7 +9,7 @@ export function defaultTranscriptsDir(env: NodeJS.ProcessEnv = process.env): str
 }
 
 const TEXT_EXTS = new Set([".jsonl", ".json", ".md", ".txt"]);
-const isScannable = (path: string) => TEXT_EXTS.has(extname(path)) || basename(path).startsWith(".env");
+export const isScannable = (path: string) => TEXT_EXTS.has(extname(path)) || basename(path).startsWith(".env");
 
 export interface FileFindings {
   path: string;
@@ -20,29 +20,47 @@ export interface ScanReport {
   filesScanned: number;
   filesSkipped: number;
   bytesScanned: number;
-  files: FileFindings[]; // only files with findings
+  files: FileFindings[];
 }
 
-function* walk(path: string): Generator<string> {
-  const st = statSync(path);
+/**
+ * Every regular file under `path` (or `path` itself), in name order; symlinks are not
+ * followed. With `onError`, a path that cannot be read is reported and skipped instead
+ * of ending the walk.
+ */
+export function* walk(path: string, onError?: (path: string, err: unknown) => void): Generator<string> {
+  let st: ReturnType<typeof statSync>;
+  let entries: Dirent[] = [];
+  try {
+    st = statSync(path);
+    if (st.isDirectory()) entries = readdirSync(path, { withFileTypes: true });
+  } catch (err) {
+    if (!onError) throw err;
+    onError(path, err);
+    return;
+  }
   if (st.isFile()) {
     yield path;
     return;
   }
-  if (!st.isDirectory()) return;
-  for (const entry of readdirSync(path, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (entry.isSymbolicLink()) continue;
-    yield* walk(join(path, entry.name));
+    yield* walk(join(path, entry.name), onError);
   }
 }
 
-export function scrubFileContent(path: string, content: string): Finding[] {
-  if (path.endsWith(".jsonl")) return scrubJsonl(content).findings;
+/** Scrubs a file's content with the scrubber its type calls for. */
+export function scrubFile(path: string, content: string): ScrubResult<string> {
+  if (path.endsWith(".jsonl")) return scrubJsonl(content);
   if (path.endsWith(".json")) {
     const r = scrubJsonSource(content);
-    if (r) return r.findings; // not valid JSON: fall through to text
+    if (r) return r; // not valid JSON: fall through to text
   }
-  return scrubText(content).findings;
+  return scrubText(content);
+}
+
+export function scrubFileContent(path: string, content: string): Finding[] {
+  return scrubFile(path, content).findings;
 }
 
 /** Reports what scrubbing would remove under `paths`. Reads only; writes nothing. */

@@ -17,7 +17,8 @@ export type SecretKind =
   | "url_credentials"
   | "cli_password"
   | "env_secret"
-  | "assigned_secret";
+  | "assigned_secret"
+  | "unparseable_line";
 
 export interface Finding {
   kind: SecretKind;
@@ -31,6 +32,9 @@ export interface ScrubResult<T> {
   value: T;
   findings: Finding[];
 }
+
+/** Bump when the rules change, so stored copies record which scrubber produced them. */
+export const SCRUBBER_VERSION = "scrub@1";
 
 const redacted = (kind: SecretKind) => `[REDACTED:${kind}]`;
 const isRedacted = (s: string) => s.startsWith("[REDACTED:");
@@ -245,15 +249,20 @@ export function scrubJson(value: unknown): ScrubResult<unknown> {
 /**
  * Scrubs a JSON document in place: only the string tokens (and numbers under
  * password keys) that hold a secret are rewritten, so every other byte is kept —
- * large integers, `1.0`, duplicate keys, key order, whitespace and line endings.
- * Returns null when `source` is not valid JSON.
+ * large integers, `1.0`, duplicate keys, key order, whitespace, line endings and a
+ * leading BOM. Returns null when `source` is not valid JSON.
  */
 export function scrubJsonSource(source: string): ScrubResult<string> | null {
   try {
-    JSON.parse(source);
+    JSON.parse(source.startsWith("\uFEFF") ? source.slice(1) : source);
   } catch {
     return null;
   }
+  return scrubJsonTokens(source);
+}
+
+/** Rewrites secret-bearing tokens of `source`, which must be valid JSON (the caller checks). */
+function scrubJsonTokens(source: string): ScrubResult<string> {
   const findings: Finding[] = [];
   const parts: string[] = [];
   let copied = 0;
@@ -268,7 +277,7 @@ export function scrubJsonSource(source: string): ScrubResult<string> | null {
     const c = source[i]!;
     if (c === '"') {
       let j = i + 1;
-      while (source[j] !== '"') j += source[j] === "\\" ? 2 : 1;
+      while (j < source.length && source[j] !== '"') j += source[j] === "\\" ? 2 : 1;
       const token = source.slice(i, j + 1);
       let k = j + 1;
       while (k < source.length && " \t\r\n".includes(source[k]!)) k++;
@@ -304,12 +313,24 @@ export function scrubJsonSource(source: string): ScrubResult<string> | null {
   return { value: parts.join(""), findings };
 }
 
-/** Scrubs a JSONL document line by line; a line that is not JSON is scrubbed as text. */
+/** What replaces a JSONL line that is not valid JSON; parsers skip it as an unknown type. */
+export const unparseableLine = (line: string) => JSON.stringify({ type: "brain:unparseable_line", chars: line.length });
+
+/**
+ * Scrubs a JSONL document line by line. A line that is not valid JSON — in practice the
+ * last line of a session still being written, cut off at any byte — is replaced by a
+ * marker line: no rule can recognise a secret cut before its end, so nothing of such a
+ * line is kept. The complete line arrives with the next sweep.
+ */
 export function scrubJsonl(content: string): ScrubResult<string> {
   const findings: Finding[] = [];
   const lines = content.split("\n").map((line, i) => {
     if (!line.trim()) return line;
-    const r = scrubJsonSource(line) ?? scrubText(line);
+    const r = scrubJsonSource(line);
+    if (!r) {
+      findings.push({ kind: "unparseable_line", preview: `(${line.length} chars)`, line: i + 1 });
+      return unparseableLine(line);
+    }
     findings.push(...r.findings.map((f) => ({ ...f, line: i + 1 })));
     return r.value;
   });
