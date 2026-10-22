@@ -59,4 +59,25 @@ describe("migrate", () => {
     const { lastInsertRowid: newId } = turn.run("u3", "delta");
     expect(Number(newId)).toBeGreaterThan(Number(oldId));
   });
+
+  it("upgrades a v2 database with data to v3 without losing turns, search rows or vectors", () => {
+    const db = openDb(":memory:");
+    for (const m of migrations.filter((m) => m.version <= 2)) {
+      db.exec(m.sql);
+      db.pragma(`user_version = ${m.version}`);
+    }
+    db.prepare("INSERT INTO sources (id, kind, external_id, raw_path, raw_sha256, parser_version) VALUES (1, 'cc', 's1', 'raw', 'abc', 'cc@1')").run();
+    db.prepare("INSERT INTO turns (id, source_id, external_uuid, role, text) VALUES (1, 1, 'u1', 'user', 'décision SQLite')").run();
+    db.prepare("INSERT INTO turns_vec (turn_id, embedding, model, dims) VALUES (?, ?, 'bge-m3', ?)").run(1n, new Float32Array(EMBEDDING_DIMS), BigInt(EMBEDDING_DIMS));
+    expect(migrate(db)).toEqual([3]);
+    expect(db.prepare("SELECT count(*) AS n FROM turns").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT rowid FROM turns_fts WHERE turns_fts MATCH 'decision'").all()).toEqual([{ rowid: 1 }]);
+    expect(db.prepare("SELECT count(*) AS n FROM turns_vec").get()).toEqual({ n: 1 });
+    expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+    db.prepare("INSERT INTO sources (kind, external_id, raw_path, raw_sha256, parser_version) VALUES ('caa', 'a1', 'raw', 'abc', 'cai@1')").run();
+    // The foreign key still holds: deleting the source cascades to its turns.
+    db.prepare("DELETE FROM sources WHERE id = 1").run();
+    expect(db.prepare("SELECT count(*) AS n FROM turns").get()).toEqual({ n: 0 });
+  });
 });
+
