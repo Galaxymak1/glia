@@ -229,3 +229,32 @@ describe("scrubJsonl", () => {
     for (const secret of secretValues()) expect(value).not.toContain(secret);
   });
 });
+
+describe("scrubJsonl on cut-off lines", () => {
+  const P = "hunter2" + "hunter2";
+  it("scrubs a last line cut off inside a string, escaped line breaks included", () => {
+    const cut = `{"type":"user","message":{"content":"cat .env\\nDB_PASSWORD=${P}\\nAPI_KEY=x`;
+    const { value, findings } = scrubJsonl(`{"ok":1}\n${cut}`);
+    expect(value).toBe(`{"ok":1}\n{"type":"user","message":{"content":"cat .env\\nDB_PASSWORD=[REDACTED:env_secret]\\nAPI_KEY=x`);
+    expect(findings.map((f) => [f.line, f.kind])).toEqual([[2, "env_secret"]]);
+  });
+
+  it("scrubs escaped JSON inside a cut-off string", () => {
+    const cut = `{"stdout":"{\\"password\\": \\"${P}\\", \\"user\\": \\"me`;
+    expect(scrubJsonl(cut).value).not.toContain(P);
+  });
+
+  it("keeps a partial escape at the cut and stays unchanged when nothing is secret", () => {
+    const cut = `{"text":"caf\\u00`;
+    expect(scrubJsonl(cut).value).toBe(cut);
+    const secretThenPartial = `{"text":"DB_PASSWORD=${P}\\nnext \\u00`;
+    expect(scrubJsonl(secretThenPartial).value).toBe(`{"text":"DB_PASSWORD=[REDACTED:env_secret]\\nnext \\u00`);
+  });
+
+  it("handles a UTF-8 BOM on the first line", () => {
+    const line = `\uFEFF{"message":"DB_PASSWORD=${P}\\nok"}`;
+    const { value } = scrubJsonl(line);
+    expect(value).toBe(`\uFEFF{"message":"DB_PASSWORD=[REDACTED:env_secret]\\nok"}`);
+  });
+});
+

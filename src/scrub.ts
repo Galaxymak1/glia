@@ -248,15 +248,43 @@ export function scrubJson(value: unknown): ScrubResult<unknown> {
 /**
  * Scrubs a JSON document in place: only the string tokens (and numbers under
  * password keys) that hold a secret are rewritten, so every other byte is kept —
- * large integers, `1.0`, duplicate keys, key order, whitespace and line endings.
- * Returns null when `source` is not valid JSON.
+ * large integers, `1.0`, duplicate keys, key order, whitespace, line endings and a
+ * leading BOM. Returns null when `source` is not valid JSON.
  */
 export function scrubJsonSource(source: string): ScrubResult<string> | null {
   try {
-    JSON.parse(source);
+    JSON.parse(source.startsWith("\uFEFF") ? source.slice(1) : source);
   } catch {
     return null;
   }
+  return scrubJsonTokens(source);
+}
+
+/**
+ * For text that is not valid JSON but mostly is — above all the last line of a
+ * transcript still being written, cut off mid-string: scrubs each string token
+ * (the unterminated last one included) as decoded text, so escaped line breaks
+ * cannot hide a pasted `.env`, then runs the plain-text rules over the result.
+ */
+function scrubJsonFragment(source: string): ScrubResult<string> {
+  const tokens = scrubJsonTokens(source);
+  const text = scrubText(tokens.value);
+  return { value: text.value, findings: [...tokens.findings, ...text.findings] };
+}
+
+/** Decodes a JSON string body that may end mid-escape; returns the text and the undecodable tail. */
+function decodePartial(body: string): { text: string; tail: string } {
+  for (let cut = 0; cut <= 6 && cut <= body.length; cut++) {
+    try {
+      return { text: JSON.parse(`"${body.slice(0, body.length - cut)}"`) as string, tail: body.slice(body.length - cut) };
+    } catch {
+      // drop one more character of a partial escape (`\`, `\u00`) and retry
+    }
+  }
+  return { text: "", tail: body };
+}
+
+function scrubJsonTokens(source: string): ScrubResult<string> {
   const findings: Finding[] = [];
   const parts: string[] = [];
   let copied = 0;
@@ -271,18 +299,36 @@ export function scrubJsonSource(source: string): ScrubResult<string> | null {
     const c = source[i]!;
     if (c === '"') {
       let j = i + 1;
-      while (source[j] !== '"') j += source[j] === "\\" ? 2 : 1;
+      while (j < source.length && source[j] !== '"') j += source[j] === "\\" ? 2 : 1;
+      if (j >= source.length) {
+        // Unterminated: the line was cut off inside this string.
+        const { text, tail } = decodePartial(source.slice(i + 1));
+        const r = scrubString(text, afterColon ? key : undefined);
+        if (r.findings.length) {
+          findings.push(...r.findings);
+          splice(i, source.length, JSON.stringify(r.value).slice(0, -1) + tail);
+        }
+        break;
+      }
       const token = source.slice(i, j + 1);
       let k = j + 1;
       while (k < source.length && " \t\r\n".includes(source[k]!)) k++;
+      let decoded: string | undefined;
+      try {
+        decoded = JSON.parse(token) as string;
+      } catch {
+        decoded = undefined; // malformed escape in a fragment: left to the text rules
+      }
       if (!afterColon && source[k] === ":") {
-        key = JSON.parse(token) as string;
-      } else {
-        const r = scrubString(JSON.parse(token) as string, afterColon ? key : undefined);
+        key = decoded;
+      } else if (decoded !== undefined) {
+        const r = scrubString(decoded, afterColon ? key : undefined);
         if (r.findings.length) {
           findings.push(...r.findings);
           splice(i, j + 1, JSON.stringify(r.value));
         }
+        afterColon = false;
+      } else {
         afterColon = false;
       }
       i = j + 1;
@@ -307,12 +353,12 @@ export function scrubJsonSource(source: string): ScrubResult<string> | null {
   return { value: parts.join(""), findings };
 }
 
-/** Scrubs a JSONL document line by line; a line that is not JSON is scrubbed as text. */
+/** Scrubs a JSONL document line by line; a line that is not valid JSON is scrubbed as a fragment. */
 export function scrubJsonl(content: string): ScrubResult<string> {
   const findings: Finding[] = [];
   const lines = content.split("\n").map((line, i) => {
     if (!line.trim()) return line;
-    const r = scrubJsonSource(line) ?? scrubText(line);
+    const r = scrubJsonSource(line) ?? scrubJsonFragment(line);
     findings.push(...r.findings.map((f) => ({ ...f, line: i + 1 })));
     return r.value;
   });

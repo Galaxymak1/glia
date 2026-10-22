@@ -95,6 +95,36 @@ describe("EvidenceStore.put", () => {
   });
 });
 
+describe("EvidenceStore repair and safety", () => {
+  it("rewrites a stored copy that went missing or was damaged", () => {
+    const { file } = store.put("/a/s1.jsonl", transcript);
+    const path = join(rawDir(), file.stored_path);
+    const good = readFileSync(path);
+
+    rmSync(path);
+    const afterDelete = store.put("/a/s1.jsonl", transcript);
+    expect([afterDelete.created, afterDelete.repaired]).toEqual([false, true]);
+    expect(readFileSync(path).equals(good)).toBe(true);
+
+    writeFileSync(path, gzipSync("tampered\n"));
+    expect(store.put("/a/s1.jsonl", transcript).repaired).toBe(true);
+    expect(store.read(file.sha256)).toBe(gunzipSync(good).toString("utf8"));
+    expect([rowCount(), filesOnDisk().length]).toEqual([1, 1]);
+  });
+
+  it("keeps the store owner-only", () => {
+    const { file } = store.put("/a/s1.jsonl", transcript);
+    expect(statSync(rawDir()).mode & 0o777).toBe(0o700);
+    expect(statSync(join(rawDir(), file.sha256.slice(0, 2))).mode & 0o777).toBe(0o700);
+    expect(statSync(join(rawDir(), file.stored_path)).mode & 0o777).toBe(0o600);
+  });
+
+  it("scrubs the origin path too", () => {
+    const { file } = store.put(`/tmp/${SECRET}/notes.md`, Buffer.from("notes\n"));
+    expect(file.origin_path).toBe("/tmp/[REDACTED:github_token]/notes.md");
+  });
+});
+
 describe("EvidenceStore.read", () => {
   it("detects a stored file that no longer matches its hash", () => {
     const { file } = store.put("/a/notes.md", Buffer.from("plain notes\n"));
