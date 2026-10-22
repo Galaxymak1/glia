@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
-import { type Finding, scrubJsonSource, scrubJsonl, scrubText } from "./scrub.js";
+import { type Finding, type ScrubResult, scrubJsonSource, scrubJsonl, scrubText } from "./scrub.js";
 
 /** Where Claude Code keeps transcripts and auto memory. */
 export function defaultTranscriptsDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -9,7 +9,7 @@ export function defaultTranscriptsDir(env: NodeJS.ProcessEnv = process.env): str
 }
 
 const TEXT_EXTS = new Set([".jsonl", ".json", ".md", ".txt"]);
-const isScannable = (path: string) => TEXT_EXTS.has(extname(path)) || basename(path).startsWith(".env");
+export const isScannable = (path: string) => TEXT_EXTS.has(extname(path)) || basename(path).startsWith(".env");
 
 export interface FileFindings {
   path: string;
@@ -20,10 +20,11 @@ export interface ScanReport {
   filesScanned: number;
   filesSkipped: number;
   bytesScanned: number;
-  files: FileFindings[]; // only files with findings
+  files: FileFindings[];
 }
 
-function* walk(path: string): Generator<string> {
+/** Every regular file under `path` (or `path` itself), in name order; symlinks are not followed. */
+export function* walk(path: string): Generator<string> {
   const st = statSync(path);
   if (st.isFile()) {
     yield path;
@@ -36,13 +37,18 @@ function* walk(path: string): Generator<string> {
   }
 }
 
-export function scrubFileContent(path: string, content: string): Finding[] {
-  if (path.endsWith(".jsonl")) return scrubJsonl(content).findings;
+/** Scrubs a file's content with the scrubber its type calls for. */
+export function scrubFile(path: string, content: string): ScrubResult<string> {
+  if (path.endsWith(".jsonl")) return scrubJsonl(content);
   if (path.endsWith(".json")) {
     const r = scrubJsonSource(content);
-    if (r) return r.findings; // not valid JSON: fall through to text
+    if (r) return r; // not valid JSON: fall through to text
   }
-  return scrubText(content).findings;
+  return scrubText(content);
+}
+
+export function scrubFileContent(path: string, content: string): Finding[] {
+  return scrubFile(path, content).findings;
 }
 
 /** Reports what scrubbing would remove under `paths`. Reads only; writes nothing. */
