@@ -32,6 +32,9 @@ export interface ScrubResult<T> {
   findings: Finding[];
 }
 
+/** Bump when the rules change, so stored copies record which scrubber produced them. */
+export const SCRUBBER_VERSION = "scrub@1";
+
 const redacted = (kind: SecretKind) => `[REDACTED:${kind}]`;
 const isRedacted = (s: string) => s.startsWith("[REDACTED:");
 /** Shows at most a quarter of the secret, and never more than 4 characters. */

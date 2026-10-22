@@ -13,8 +13,8 @@ const brain = (...args: string[]) =>
 describe("brain init", () => {
   it("creates the database, then reports it up to date", () => {
     const db = join(dir, "nested", "brain.db");
-    expect(brain("init", "--db", db)).toBe(`Created ${db} (schema v1)\n`);
-    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v1)\n`);
+    expect(brain("init", "--db", db)).toBe(`Created ${db} (schema v2)\n`);
+    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v2)\n`);
   });
 
   it("rejects an unknown command", () => {
@@ -29,7 +29,7 @@ describe("brain init", () => {
     );
     const created = outs.filter((o) => o.stdout.startsWith("Created")).length;
     expect(created).toBe(1);
-    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v1)\n`);
+    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v2)\n`);
   });
 });
 
@@ -56,3 +56,21 @@ describe("brain scrub", () => {
     expect(() => brain("scrub", dir)).toThrow(/needs --dry-run/);
   });
 });
+
+describe("brain ingest", () => {
+  it("stores files once: a second run adds nothing", () => {
+    const src = join(dir, "ingest-src");
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, "s1.jsonl"), JSON.stringify({ type: "user", message: { content: "DB_PASSWORD=" + "hunter2" + "hunter2" } }) + "\n");
+    writeFileSync(join(src, "notes.md"), "notes\n");
+    writeFileSync(join(src, "photo.png"), "binary");
+    const db = join(dir, "ingest", "brain.db");
+    expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 2 new files \(.* MB, .* MB compressed, 1 secrets redacted\); 0 unchanged; skipped 1 non-text files\n$/);
+    expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 0 new files .*; 2 unchanged; skipped 1 non-text files\n$/);
+  });
+
+  it("needs a path", () => {
+    expect(() => brain("ingest", "--db", join(dir, "x.db"))).toThrow(/needs at least one path/);
+  });
+});
+
