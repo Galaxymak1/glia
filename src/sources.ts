@@ -17,7 +17,7 @@ export interface IndexResult {
   stats?: ParseStats;
 }
 
-interface ExistingSource {
+export interface ExistingSource {
   id: number;
   raw_sha256: string;
   parser_version: string;
@@ -43,14 +43,7 @@ export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore,
   const externalId =
     file.kind === "memory" ? `${file.projectDir}/memory/${file.name}` : file.kind === "subagent" ? `${file.sessionId}/agent-${file.agentId}` : file.sessionId;
 
-  const existing = db
-    .prepare(
-      `SELECT s.id, s.raw_sha256, s.parser_version, s.updated_at, r.received_at,
-              (SELECT count(*) FROM turns t WHERE t.source_id = s.id) AS turns
-         FROM sources s LEFT JOIN raw_files r ON r.sha256 = s.raw_sha256
-        WHERE s.kind = ? AND s.external_id = ?`,
-    )
-    .get(kind, externalId) as ExistingSource | undefined;
+  const existing = findSource(db, kind, externalId);
   if (existing?.raw_sha256 === raw.sha256 && existing.parser_version === CC_PARSER_VERSION) return result("unchanged");
   // After a parser change the stored turns are not comparable with a new parse: re-parse.
   const otherCopy = existing && existing.raw_sha256 !== raw.sha256 && existing.parser_version === CC_PARSER_VERSION;
@@ -62,8 +55,9 @@ export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore,
     return result("older");
   }
 
-  return db.transaction((): IndexResult => {
-    const source = {
+  const written = writeSource(
+    db,
+    {
       kind,
       external_id: externalId,
       title: parsed.title,
@@ -74,7 +68,53 @@ export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore,
       raw_path: raw.stored_path,
       raw_sha256: raw.sha256,
       parser_version: CC_PARSER_VERSION,
-    };
+    },
+    parsed.turns,
+  );
+  return { status: existing ? "updated" : "new", kind: file.kind, ...written, stats: parsed.stats };
+}
+
+export interface SourceRow {
+  kind: "cc" | "cai" | "cap" | "cad" | "caa" | "mem";
+  external_id: string;
+  title: string | null;
+  project_hint: string | null;
+  cwd: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  raw_path: string;
+  raw_sha256: string;
+  parser_version: string;
+}
+
+export interface TurnRow {
+  externalUuid: string;
+  parentUuid: string | null;
+  role: string;
+  ts: string | null;
+  text: string;
+  isSidechain: boolean;
+}
+
+/** The stored row for a source, with its turn count and the time its raw copy was received. */
+export function findSource(db: Database.Database, kind: SourceRow["kind"], externalId: string): ExistingSource | undefined {
+  return db
+    .prepare(
+      `SELECT s.id, s.raw_sha256, s.parser_version, s.updated_at, r.received_at,
+              (SELECT count(*) FROM turns t WHERE t.source_id = s.id) AS turns
+         FROM sources s LEFT JOIN raw_files r ON r.sha256 = s.raw_sha256
+        WHERE s.kind = ? AND s.external_id = ?`,
+    )
+    .get(kind, externalId) as ExistingSource | undefined;
+}
+
+/**
+ * Upserts a source and makes its turns exactly `turns`, in one transaction. Only turns whose
+ * content changed are written, so unchanged turns keep their ids, FTS rows and vectors; turns
+ * no longer present (a parser change) are removed.
+ */
+export function writeSource(db: Database.Database, source: SourceRow, turns: TurnRow[]): { turnsWritten: number; turnsRemoved: number } {
+  return db.transaction(() => {
     const { id: sourceId } = db
       .prepare(
         `INSERT INTO sources (kind, external_id, title, project_hint, cwd, created_at, updated_at, raw_path, raw_sha256, parser_version)
@@ -86,8 +126,6 @@ export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore,
          RETURNING id`,
       )
       .get(source) as { id: number };
-
-    // Only rows whose content changed are written, so unchanged turns keep their FTS rows and vectors.
     const upsert = db.prepare(
       `INSERT INTO turns (source_id, external_uuid, parent_uuid, role, ts, text, is_sidechain)
        VALUES (@source_id, @external_uuid, @parent_uuid, @role, @ts, @text, @is_sidechain)
@@ -98,7 +136,7 @@ export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore,
           OR turns.ts IS NOT excluded.ts OR turns.text IS NOT excluded.text OR turns.is_sidechain IS NOT excluded.is_sidechain`,
     );
     let turnsWritten = 0;
-    for (const t of parsed.turns) {
+    for (const t of turns) {
       turnsWritten += upsert.run({
         source_id: sourceId,
         external_uuid: t.externalUuid,
@@ -109,12 +147,10 @@ export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore,
         is_sidechain: t.isSidechain ? 1 : 0,
       }).changes;
     }
-    // The newest copy of a transcript holds every line of the older ones, so a turn it
-    // lacks was dropped by a parser change: remove it.
-    const keep = JSON.stringify(parsed.turns.map((t) => t.externalUuid));
+    const keep = JSON.stringify(turns.map((t) => t.externalUuid));
     const { changes: turnsRemoved } = db
       .prepare("DELETE FROM turns WHERE source_id = ? AND external_uuid NOT IN (SELECT value FROM json_each(?))")
       .run(sourceId, keep);
-    return { status: existing ? "updated" : "new", kind: file.kind, turnsWritten, turnsRemoved, stats: parsed.stats };
+    return { turnsWritten, turnsRemoved };
   })();
 }
