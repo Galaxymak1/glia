@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
 import { type Config, isExcludedProject, loadConfig } from "./config.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
-import { classifyClaudeCodePath } from "./parsers/claudeCode.js";
+import { claudeCodeProjectDir } from "./parsers/claudeCode.js";
 import { indexClaudeCodeFile } from "./sources.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
@@ -52,7 +53,8 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
       failed++;
       console.error(`brain: ${message}`);
     };
-    for (const root of paths) {
+    // Absolute paths: exclusion and parsing recognise files by their place under projects/.
+    for (const root of paths.map((p) => resolve(p))) {
       // fs messages quote the raw path; report the scrubbed path and the error code instead.
       const fsError = (p: string, err: unknown) => `${scrubPath(p)}: ${(err as NodeJS.ErrnoException).code ?? "unreadable"}`;
       for (const path of walk(root, (p, err) => fail(fsError(p, err)))) {
@@ -60,9 +62,9 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           skipped++;
           continue;
         }
-        // Excluded projects never reach the store.
-        const cc = classifyClaudeCodePath(path);
-        if (cc && isExcludedProject(cc.projectDir, config)) {
+        // Nothing from an excluded project reaches the store, whatever the file.
+        const projectDir = claudeCodeProjectDir(path);
+        if (projectDir && isExcludedProject(projectDir, config)) {
           excluded++;
           continue;
         }
@@ -83,7 +85,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           } else if (r.repaired) repaired++;
           else unchanged++;
 
-          const ix = indexClaudeCodeFile(db, store, r.file, config);
+          const ix = indexClaudeCodeFile(db, store, r.file, config, path);
           if (!ix) continue;
           if (ix.status === "new" || ix.status === "updated") {
             parsed[ix.kind]++;
