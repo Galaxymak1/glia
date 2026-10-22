@@ -4,11 +4,11 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, extname, join, relative, sep } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type Database from "better-sqlite3";
 import { scrubFile } from "./scan.js";
-import { SCRUBBER_VERSION, scrubText } from "./scrub.js";
+import { SCRUBBER_VERSION, scrubJsonSource, scrubText } from "./scrub.js";
 
 export interface RawFile {
   sha256: string;
@@ -31,6 +31,21 @@ export interface PutResult {
 }
 
 const sha256 = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
+
+/**
+ * A path with any secret in it redacted, segment by segment, so that rules anchored at
+ * the start of a line (`DB_PASSWORD=...`) also apply to a file name.
+ */
+export const scrubPath = (path: string) =>
+  path
+    .split(sep)
+    .map((part) => {
+      // Without its extension first: `DB_PASSWORD=x.md` would otherwise read as code (`a.b`).
+      const ext = extname(part);
+      const base = ext ? part.slice(0, -ext.length) : part;
+      return scrubText(scrubText(base).value + ext).value;
+    })
+    .join(sep);
 
 /** Where raw files live for a given database: a `raw/` folder next to it. */
 export const rawDirFor = (dbPath: string) => join(dirname(dbPath), "raw");
@@ -56,10 +71,12 @@ export class EvidenceStore {
     if (existing && this.isIntact(existing)) return { file: existing, created: false, repaired: false };
 
     // A file name can hold a secret too; it is stored and reported scrubbed.
-    const origin = scrubText(originPath).value;
+    const origin = scrubPath(originPath);
     if (data.includes(0)) throw new Error(`${origin}: binary content, not stored`);
     const text = data.toString("utf8");
     if (!Buffer.from(text, "utf8").equals(data)) throw new Error(`${origin}: not valid UTF-8, not stored`);
+    // A .json file that does not parse (a truncated export) cannot be scrubbed safely.
+    if (originPath.endsWith(".json") && !scrubJsonSource(text)) throw new Error(`${origin}: not valid JSON, not stored`);
 
     const scrubbed = scrubFile(originPath, text);
     const gz = gzipSync(scrubbed.value);

@@ -133,9 +133,9 @@ describe("scrubText", () => {
     expect(scrubText(escaped).value).toBe("[REDACTED:private_key]");
     // A truncated key stops at the first line that is not part of it.
     expect(scrubText(`-----BEGIN PRIVATE KEY-----\n${S.pemBody}\nnext: value`).value).toBe("[REDACTED:private_key]\nnext: value");
-    // A half-written JSONL line (not valid JSON) keeps escaped line breaks.
-    const brokenLine = `{"stdout":"-----BEGIN PRIVATE KEY-----\\n${S.pemBody}\\n${S.pemBody}`;
-    expect(scrubJsonl(brokenLine).value).toBe(`{"stdout":"[REDACTED:private_key]`);
+    // A JSON-escaped key body in one string.
+    const escapedKey = `-----BEGIN PRIVATE KEY-----\\n${S.pemBody}\\n${S.pemBody}`;
+    expect(scrubText(escapedKey).value).toBe("[REDACTED:private_key]");
   });
 
   it("leaves look-alikes untouched", () => {
@@ -224,37 +224,44 @@ describe("scrubJsonl", () => {
     expect(JSON.parse(lines[1]!).message.content).toBe("my .env:\nDB_PASSWORD=[REDACTED:env_secret]\nPORT=3000");
     expect(JSON.parse(lines[2]!).toolUseResult.stdout).toBe("[REDACTED:private_key]");
     expect(lines[2]!.endsWith("\r")).toBe(true);
-    expect(lines[3]).toBe("not json [REDACTED:aws_access_key]");
-    expect(findings.map((f) => [f.line, f.kind])).toEqual([[2, "env_secret"], [3, "private_key"], [4, "aws_access_key"]]);
+    expect(lines[3]).toBe('{"type":"brain:unparseable_line","chars":29}');
+    expect(findings.map((f) => [f.line, f.kind])).toEqual([[2, "env_secret"], [3, "private_key"], [4, "unparseable_line"]]);
     for (const secret of secretValues()) expect(value).not.toContain(secret);
   });
 });
 
 describe("scrubJsonl on cut-off lines", () => {
   const P = "hunter2" + "hunter2";
-  it("scrubs a last line cut off inside a string, escaped line breaks included", () => {
+
+  it("replaces a line that is not valid JSON with a marker, keeping the others", () => {
     const cut = `{"type":"user","message":{"content":"cat .env\\nDB_PASSWORD=${P}\\nAPI_KEY=x`;
     const { value, findings } = scrubJsonl(`{"ok":1}\n${cut}`);
-    expect(value).toBe(`{"ok":1}\n{"type":"user","message":{"content":"cat .env\\nDB_PASSWORD=[REDACTED:env_secret]\\nAPI_KEY=x`);
-    expect(findings.map((f) => [f.line, f.kind])).toEqual([[2, "env_secret"]]);
+    expect(value).toBe(`{"ok":1}\n{"type":"brain:unparseable_line","chars":${cut.length}}`);
+    expect(findings.map((f) => [f.line, f.kind])).toEqual([[2, "unparseable_line"]]);
+    expect(findings[0]!.preview).toBe(`(${cut.length} chars)`);
   });
 
-  it("scrubs escaped JSON inside a cut-off string", () => {
-    const cut = `{"stdout":"{\\"password\\": \\"${P}\\", \\"user\\": \\"me`;
-    expect(scrubJsonl(cut).value).not.toContain(P);
-  });
-
-  it("keeps a partial escape at the cut and stays unchanged when nothing is secret", () => {
-    const cut = `{"text":"caf\\u00`;
-    expect(scrubJsonl(cut).value).toBe(cut);
-    const secretThenPartial = `{"text":"DB_PASSWORD=${P}\\nnext \\u00`;
-    expect(scrubJsonl(secretThenPartial).value).toBe(`{"text":"DB_PASSWORD=[REDACTED:env_secret]\\nnext \\u00`);
+  it("keeps no run of 5+ characters of any secret, whatever byte the line is cut at", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        content: `token ${S.github} key ${S.google} aws ${S.aws} ${S.openai} ${S.anthropic}\n-----BEGIN PRIVATE KEY-----\n${S.pemBody}\n-----END PRIVATE KEY-----`,
+        stdout: `{"password": "${P}"} postgres://u:${S.urlPassword}@db Bearer ${S.bearer}`,
+      },
+    });
+    const secrets = [S.github, S.google, S.aws, S.openai, S.anthropic, S.pemBody, P, S.urlPassword, S.bearer];
+    for (let cut = 1; cut <= line.length; cut++) {
+      const out = scrubJsonl(`{"ok":1}\n${line.slice(0, cut)}`).value;
+      for (const secret of secrets) {
+        for (let k = 0; k + 5 <= secret.length; k++) {
+          if (out.includes(secret.slice(k, k + 5))) throw new Error(`cut at ${cut} leaks part of a secret`);
+        }
+      }
+    }
   });
 
   it("handles a UTF-8 BOM on the first line", () => {
     const line = `\uFEFF{"message":"DB_PASSWORD=${P}\\nok"}`;
-    const { value } = scrubJsonl(line);
-    expect(value).toBe(`\uFEFF{"message":"DB_PASSWORD=[REDACTED:env_secret]\\nok"}`);
+    expect(scrubJsonl(line).value).toBe(`\uFEFF{"message":"DB_PASSWORD=[REDACTED:env_secret]\\nok"}`);
   });
 });
-
