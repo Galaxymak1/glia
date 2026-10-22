@@ -92,6 +92,15 @@ describe("indexClaudeCodeFile", () => {
     expect(turns().map((t) => t.external_uuid)).toEqual(["u1", "a2"]);
   });
 
+  it("re-parses a grown copy after a parser change even if the new parser yields fewer turns", () => {
+    ix(put(sessionPath(), v1, "2026-10-20T10:00:00Z"), NO_EXCLUDES);
+    db.prepare("UPDATE sources SET parser_version = 'cc@0'").run();
+    for (const extra of ["x1", "x2", "x3"]) db.prepare("INSERT INTO turns (source_id, external_uuid, role, text) VALUES (1, ?, 'user', 'cc@0 only')").run(extra);
+    expect(ix(put(sessionPath(), v2, "2026-10-20T10:15:00Z"), NO_EXCLUDES)).toMatchObject({ status: "updated", turnsRemoved: 3 });
+    expect(db.prepare("SELECT parser_version FROM sources").get()).toEqual({ parser_version: "cc@1" });
+    expect(turns().map((t) => t.external_uuid)).toEqual(["u1", "a2", "u3"]);
+  });
+
   it("indexes subagent transcripts and memory files under their own ids", () => {
     const sub = put(`${PROJECTS}/-home-me-dev-brain/${S}/subagents/agent-abc123.jsonl`, v1, "2026-10-20T10:00:00Z");
     const mem = put(`${PROJECTS}/-home-me-dev-brain/memory/prefers_sqlite.md`, "---\nname: prefers-sqlite\n---\nSQLite.\n", "2026-10-20T10:00:00Z");
