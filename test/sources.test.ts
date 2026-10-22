@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Config } from "../src/config.js";
-import { isExcludedProject } from "../src/config.js";
+import { isExcludedPath, isExcludedProject } from "../src/config.js";
 import { openDb } from "../src/db.js";
 import { EvidenceStore } from "../src/evidence.js";
 import { migrate } from "../src/migrations.js";
@@ -117,6 +117,20 @@ describe("indexClaudeCodeFile", () => {
     expect(ix(put(sessionPath("-home-me-work-acme"), v1, "2026-10-20T10:00:00Z"), config)).toMatchObject({ status: "excluded" });
     expect(ix(put("/home/me/notes.md", "notes\n", "2026-10-20T10:00:00Z"), config)).toBeNull();
     expect([sources(), turns()]).toEqual([[], []]);
+  });
+});
+
+describe("isExcludedPath", () => {
+  it("excludes a path when any of its folders matches, wherever it sits", () => {
+    const config: Config = { claudeCode: { exclude: ["-home-me-work-*"] } };
+    const S2 = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
+    for (const p of [
+      `/projects/-home-me-work-acme/${S2}.jsonl`,
+      `/projects/-home-me-work-acme/${S2}/tool-results/projects/foo/x.txt`,
+      `/projects/sub/projects/-home-me-work-acme/a.jsonl`,
+      `/backup/mixed/-home-me-work-acme/memory/x.md`,
+    ]) expect(isExcludedPath(p, config)).toBe(true);
+    expect(isExcludedPath(`/projects/-home-me-dev/${S2}.jsonl`, config)).toBe(false);
   });
 });
 

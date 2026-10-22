@@ -2,7 +2,7 @@
 // Re-running is idempotent; a newer copy of a growing transcript updates its source in place.
 
 import type Database from "better-sqlite3";
-import { type Config, isExcludedProject } from "./config.js";
+import { type Config, isExcludedPath } from "./config.js";
 import type { EvidenceStore, RawFile } from "./evidence.js";
 import { CC_PARSER_VERSION, classifyClaudeCodePath, type ParseStats, parseMemory, parseSession } from "./parsers/claudeCode.js";
 
@@ -37,7 +37,7 @@ export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore,
   const file = classifyClaudeCodePath(path);
   if (!file) return null;
   const result = (status: IndexStatus): IndexResult => ({ status, kind: file.kind, turnsWritten: 0, turnsRemoved: 0 });
-  if (isExcludedProject(file.projectDir, config)) return result("excluded");
+  if (isExcludedPath(path, config)) return result("excluded");
 
   const kind = file.kind === "memory" ? "mem" : "cc";
   const externalId =
