@@ -3,6 +3,8 @@
 // skipped and counted, never fatal; the raw file stays in the evidence store, so nothing
 // skipped here is lost.
 
+import { join, relative } from "node:path";
+
 export const CC_PARSER_VERSION = "cc@1";
 
 export type ClaudeCodeFile =
@@ -20,6 +22,19 @@ const PROJECT_DIR = /\/projects\/([^/]+)\//;
 /** The Claude Code project folder of any path under `<config>/projects/<dir>/`; null outside it. Needs an absolute path. */
 export function claudeCodeProjectDir(path: string): string | null {
   return PROJECT_DIR.exec(path)?.[1] ?? null;
+}
+
+/**
+ * Maps a file found while walking `root` to the path the Claude Code rules read,
+ * `/projects/<dir>/...`. `realRoot` is `root` with symlinks resolved. A root inside a
+ * `projects/` folder keeps its place there; any other root is taken to be a projects folder
+ * itself (a copy, a spool, a symlink target under another name), so exclusion and parsing
+ * never depend on what the folder is called.
+ */
+export function projectsView(root: string, realRoot: string): (path: string) => string {
+  const at = realRoot.lastIndexOf("/projects/");
+  const prefix = realRoot.endsWith("/projects") || at < 0 ? "" : realRoot.slice(at + "/projects/".length);
+  return (path) => join("/projects", prefix, relative(root, path));
 }
 
 /** Recognises a Claude Code file by where it sits under `<config>/projects/`; null for anything else. */

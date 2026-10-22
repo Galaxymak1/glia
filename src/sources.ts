@@ -27,8 +27,8 @@ interface ExistingSource {
 }
 
 /**
- * Parses `raw`, read from `path` (absolute), into sources and turns if it is a Claude Code
- * file; null for other files. A source is re-parsed when its content or the parser version
+ * Parses `raw` into sources and turns if `path` (as `projectsView` maps it) is a Claude
+ * Code file; null for other files. A source is re-parsed when its content or the parser version
  * changed. A copy older than the one already parsed is left alone: for transcripts, which
  * only grow, "older" means fewer turns or an earlier last turn, whatever order the copies
  * arrive in; for memory files, which are edited in place, the copy received last wins.
@@ -52,7 +52,8 @@ export function indexClaudeCodeFile(db: Database.Database, store: EvidenceStore,
     )
     .get(kind, externalId) as ExistingSource | undefined;
   if (existing?.raw_sha256 === raw.sha256 && existing.parser_version === CC_PARSER_VERSION) return result("unchanged");
-  const otherCopy = existing && existing.raw_sha256 !== raw.sha256;
+  // After a parser change the stored turns are not comparable with a new parse: re-parse.
+  const otherCopy = existing && existing.raw_sha256 !== raw.sha256 && existing.parser_version === CC_PARSER_VERSION;
   if (otherCopy && file.kind === "memory" && existing.received_at && existing.received_at > raw.received_at) return result("older");
 
   const text = store.read(raw.sha256);

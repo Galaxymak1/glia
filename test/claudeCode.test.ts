@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claudeCodeProjectDir, classifyClaudeCodePath, parseMemory, parseSession } from "../src/parsers/claudeCode.js";
+import { claudeCodeProjectDir, classifyClaudeCodePath, parseMemory, parseSession, projectsView } from "../src/parsers/claudeCode.js";
 
 const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
 const base = { sessionId: S, cwd: "/home/me/dev/brain", gitBranch: "master", version: "2.1.303", entrypoint: "cli", isSidechain: false };
@@ -129,6 +129,19 @@ describe("claudeCodeProjectDir", () => {
     expect(claudeCodeProjectDir(`/h/.claude/projects/-home-me-work/${S}/tool-results/out.txt`)).toBe("-home-me-work");
     expect(claudeCodeProjectDir("/h/.claude/projects/-home-me-work/x/subagents/agent-1.meta.json")).toBe("-home-me-work");
     expect(claudeCodeProjectDir("projects/-home-me-work/a.jsonl")).toBeNull(); // relative: callers resolve first
+  });
+});
+
+describe("projectsView", () => {
+  it("places every file under /projects/<dir>/, whatever the root is called", () => {
+    const f = `-home-me-work/${S}.jsonl`;
+    expect(projectsView("/h/.claude/projects", "/h/.claude/projects")(`/h/.claude/projects/${f}`)).toBe(`/projects/${f}`);
+    expect(projectsView("/backup/projs", "/backup/projs")(`/backup/projs/${f}`)).toBe(`/projects/${f}`);
+    expect(projectsView("/h/link", "/h/.claude/projects")(`/h/link/${f}`)).toBe(`/projects/${f}`);
+    expect(projectsView("/h/.claude/projects/-home-me-work", "/h/.claude/projects/-home-me-work")(`/h/.claude/projects/${f}`)).toBe(`/projects/${f}`);
+    const file = `/h/.claude/projects/${f}`;
+    expect(projectsView(file, file)(file)).toBe(`/projects/${f}`);
+    expect(projectsView("/h/projects/x/.claude/projects", "/h/projects/x/.claude/projects")(`/h/projects/x/.claude/projects/${f}`)).toBe(`/projects/${f}`);
   });
 });
 

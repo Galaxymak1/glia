@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
@@ -124,6 +124,24 @@ describe("brain ingest of Claude Code projects", () => {
     const stored = readdirSync(join(dir, "cc-db", "raw"), { recursive: true }).filter((f) => String(f).endsWith(".gz"));
     const contents = stored.map((f) => gunzipSync(readFileSync(join(dir, "cc-db", "raw", String(f)))).toString("utf8"));
     expect(contents.some((c) => c.includes("acme"))).toBe(false);
+  });
+
+  it("applies exclusion and parsing through a symlink and in a copy under another name", () => {
+    const root = join(dir, "cc-home2");
+    makeProjects(root);
+    symlinkSync(join(root, "projects"), join(root, "link"));
+    cpSync(join(root, "projects"), join(root, "spool"), { recursive: true });
+    const config = join(dir, "cc-config2.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    for (const folder of ["link", "spool"]) {
+      const db = join(dir, `cc-db-${folder}`, "brain.db");
+      const run = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(root, folder)], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+      expect(run).toMatch(/2 in excluded projects/);
+      expect(run).toMatch(/\nParsed 1 sessions/);
+      const raw = join(dir, `cc-db-${folder}`, "raw");
+      const stored = readdirSync(raw, { recursive: true }).filter((f) => String(f).endsWith(".gz"));
+      expect(stored.map((f) => gunzipSync(readFileSync(join(raw, String(f)))).toString("utf8")).some((c) => c.includes("acme"))).toBe(false);
+    }
   });
 });
 

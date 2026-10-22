@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
 import { type Config, isExcludedProject, loadConfig } from "./config.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
-import { claudeCodeProjectDir } from "./parsers/claudeCode.js";
+import { claudeCodeProjectDir, projectsView } from "./parsers/claudeCode.js";
 import { indexClaudeCodeFile } from "./sources.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
@@ -53,17 +53,24 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
       failed++;
       console.error(`brain: ${message}`);
     };
-    // Absolute paths: exclusion and parsing recognise files by their place under projects/.
+    // fs messages quote the raw path; report the scrubbed path and the error code instead.
+    const fsError = (p: string, err: unknown) => `${scrubPath(p)}: ${(err as NodeJS.ErrnoException).code ?? "unreadable"}`;
     for (const root of paths.map((p) => resolve(p))) {
-      // fs messages quote the raw path; report the scrubbed path and the error code instead.
-      const fsError = (p: string, err: unknown) => `${scrubPath(p)}: ${(err as NodeJS.ErrnoException).code ?? "unreadable"}`;
+      // Exclusion and parsing read each file's place under projects/, whatever the root is called.
+      let view: (path: string) => string;
+      try {
+        view = projectsView(root, realpathSync(root));
+      } catch (err) {
+        fail(fsError(root, err));
+        continue;
+      }
       for (const path of walk(root, (p, err) => fail(fsError(p, err)))) {
         if (!isScannable(path)) {
           skipped++;
           continue;
         }
         // Nothing from an excluded project reaches the store, whatever the file.
-        const projectDir = claudeCodeProjectDir(path);
+        const projectDir = claudeCodeProjectDir(view(path));
         if (projectDir && isExcludedProject(projectDir, config)) {
           excluded++;
           continue;
@@ -85,7 +92,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           } else if (r.repaired) repaired++;
           else unchanged++;
 
-          const ix = indexClaudeCodeFile(db, store, r.file, config, path);
+          const ix = indexClaudeCodeFile(db, store, r.file, config, view(path));
           if (!ix) continue;
           if (ix.status === "new" || ix.status === "updated") {
             parsed[ix.kind]++;

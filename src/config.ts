@@ -7,6 +7,7 @@ export interface Config {
     /**
      * Claude Code project folders (names under ~/.claude/projects, `*` as wildcard) that are
      * never stored or parsed, e.g. client or employer repositories. Everything else is in.
+     * Adding a project later stops new copies; it does not remove what is already stored.
      */
     exclude: string[];
   };
