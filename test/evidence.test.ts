@@ -119,9 +119,16 @@ describe("EvidenceStore repair and safety", () => {
     expect(statSync(join(rawDir(), file.stored_path)).mode & 0o777).toBe(0o600);
   });
 
-  it("scrubs the origin path too", () => {
+  it("scrubs the origin path too, segment by segment", () => {
     const { file } = store.put(`/tmp/${SECRET}/notes.md`, Buffer.from("notes\n"));
     expect(file.origin_path).toBe("/tmp/[REDACTED:github_token]/notes.md");
+    const P = "hunter2" + "hunter2";
+    expect(store.put(`/tmp/DB_PASSWORD=${P}.md`, Buffer.from("other\n")).file.origin_path).toBe("/tmp/DB_PASSWORD=[REDACTED:env_secret].md");
+  });
+
+  it("refuses a .json file that does not parse", () => {
+    expect(() => store.put("/a/conversations.json", Buffer.from('[{"uuid":"c1","name":"DB_PASSWORD=x'))).toThrow(/not valid JSON/);
+    expect([rowCount(), filesOnDisk().length]).toEqual([0, 0]);
   });
 });
 

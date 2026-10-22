@@ -2,7 +2,7 @@
 import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
 import { defaultDbPath, openDb } from "./db.js";
-import { EvidenceStore, rawDirFor } from "./evidence.js";
+import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
@@ -43,13 +43,22 @@ function ingest(dbPath: string, paths: string[]): number {
       console.error(`brain: ${message}`);
     };
     for (const root of paths) {
-      for (const path of walk(root, (p, err) => fail(`${p}: ${err instanceof Error ? err.message : String(err)}`))) {
+      // fs messages quote the raw path; report the scrubbed path and the error code instead.
+      const fsError = (p: string, err: unknown) => `${scrubPath(p)}: ${(err as NodeJS.ErrnoException).code ?? "unreadable"}`;
+      for (const path of walk(root, (p, err) => fail(fsError(p, err)))) {
         if (!isScannable(path)) {
           skipped++;
           continue;
         }
         try {
-          const r = store.put(path, readFileSync(path));
+          let data: Buffer;
+          try {
+            data = readFileSync(path);
+          } catch (err) {
+            fail(fsError(path, err));
+            continue;
+          }
+          const r = store.put(path, data);
           if (r.repaired) repaired++;
           if (!r.created) {
             if (!r.repaired) unchanged++;
