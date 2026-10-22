@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
@@ -12,8 +12,10 @@ export function defaultDbPath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 export function openDb(path: string): Database.Database {
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new Database(path);
+  // Owner-only: the database holds the text of every conversation.
+  if (path !== ":memory:") chmodSync(path, 0o600);
   sqliteVec.load(db);
   db.pragma("busy_timeout = 5000");
   enableWal(db);
