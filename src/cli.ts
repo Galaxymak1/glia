@@ -37,17 +37,22 @@ function ingest(dbPath: string, paths: string[]): number {
   try {
     migrate(db);
     const store = new EvidenceStore(db, rawDirFor(dbPath));
-    let created = 0, unchanged = 0, skipped = 0, failed = 0, bytes = 0, storedBytes = 0, redactions = 0;
+    let created = 0, repaired = 0, unchanged = 0, skipped = 0, failed = 0, bytes = 0, storedBytes = 0, redactions = 0;
+    const fail = (message: string) => {
+      failed++;
+      console.error(`brain: ${message}`);
+    };
     for (const root of paths) {
-      for (const path of walk(root)) {
+      for (const path of walk(root, (p, err) => fail(`${p}: ${err instanceof Error ? err.message : String(err)}`))) {
         if (!isScannable(path)) {
           skipped++;
           continue;
         }
         try {
           const r = store.put(path, readFileSync(path));
+          if (r.repaired) repaired++;
           if (!r.created) {
-            unchanged++;
+            if (!r.repaired) unchanged++;
             continue;
           }
           created++;
@@ -55,15 +60,16 @@ function ingest(dbPath: string, paths: string[]): number {
           storedBytes += r.file.stored_bytes;
           redactions += r.file.redactions;
         } catch (err) {
-          failed++;
-          console.error(`brain: ${err instanceof Error ? err.message : String(err)}`);
+          fail(err instanceof Error ? err.message : String(err));
         }
       }
     }
     const mb = (n: number) => (n / 1e6).toFixed(1);
     console.log(
       `Stored ${created} new files (${mb(bytes)} MB, ${mb(storedBytes)} MB compressed, ${redactions} secrets redacted); ` +
-        `${unchanged} unchanged; skipped ${skipped} non-text files` +
+        `${unchanged} unchanged; ` +
+        (repaired ? `${repaired} repaired; ` : "") +
+        `skipped ${skipped} non-text files` +
         (failed ? `; ${failed} failed` : ""),
     );
     return failed ? 1 : 0;

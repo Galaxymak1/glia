@@ -69,6 +69,23 @@ describe("brain ingest", () => {
     expect(brain("ingest", "--db", db, src)).toMatch(/^Stored 0 new files .*; 2 unchanged; skipped 1 non-text files\n$/);
   });
 
+  it("reports a path it cannot read and still stores the rest", () => {
+    const src = join(dir, "ingest-partial");
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, "a.md"), "a\n");
+    const db = join(dir, "ingest-partial-db", "brain.db");
+    const run = () => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(dir, "does-not-exist"), src], { encoding: "utf8", stdio: "pipe" });
+    let err: { status?: number; stdout?: string; stderr?: string } = {};
+    try {
+      run();
+    } catch (e) {
+      err = e as typeof err;
+    }
+    expect(err.status).toBe(1);
+    expect(err.stderr).toMatch(/does-not-exist: ENOENT/);
+    expect(err.stdout).toMatch(/^Stored 1 new files .*; 1 failed\n$/);
+  });
+
   it("needs a path", () => {
     expect(() => brain("ingest", "--db", join(dir, "x.db"))).toThrow(/needs at least one path/);
   });
