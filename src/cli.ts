@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { readFileSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
 import { type Config, isExcludedProject, loadConfig } from "./config.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
-import { claudeCodeProjectDir, projectsView } from "./parsers/claudeCode.js";
+import { claudeCodeProjectDir, isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
 import { indexClaudeCodeFile } from "./sources.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
@@ -59,7 +59,11 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
       // Exclusion and parsing read each file's place under projects/, whatever the root is called.
       let view: (path: string) => string;
       try {
-        view = projectsView(root, realpathSync(root));
+        const real = realpathSync(root);
+        const shape: RootShape = statSync(real).isDirectory()
+          ? looksLikeProjectFolder(readdirSync(real)) ? "project-folder" : "projects-folder"
+          : isSessionFileName(basename(real)) ? "session-file" : "projects-folder";
+        view = projectsView(root, real, shape);
       } catch (err) {
         fail(fsError(root, err));
         continue;

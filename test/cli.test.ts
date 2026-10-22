@@ -126,6 +126,22 @@ describe("brain ingest of Claude Code projects", () => {
     expect(contents.some((c) => c.includes("acme"))).toBe(false);
   });
 
+  it("excludes a copied single project folder and a lone session file copied outside projects/", () => {
+    const root = join(dir, "cc-home3");
+    makeProjects(root);
+    const backup = join(dir, "backup3");
+    cpSync(join(root, "projects", "-home-me-work-acme"), join(backup, "-home-me-work-acme"), { recursive: true });
+    mkdirSync(join(backup, "lone", "-home-me-work-acme"), { recursive: true });
+    cpSync(join(root, "projects", "-home-me-work-acme", `${S}.jsonl`), join(backup, "lone", "-home-me-work-acme", `${S}.jsonl`));
+    const config = join(dir, "cc-config3.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    const db = join(dir, "cc-db3", "brain.db");
+    const run = (target: string) =>
+      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, target], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+    expect(run(join(backup, "-home-me-work-acme"))).toMatch(/^Stored 0 new files .*; 2 in excluded projects\n/);
+    expect(run(join(backup, "lone", "-home-me-work-acme", `${S}.jsonl`))).toMatch(/^Stored 0 new files .*; 1 in excluded projects\n/);
+  });
+
   it("applies exclusion and parsing through a symlink and in a copy under another name", () => {
     const root = join(dir, "cc-home2");
     makeProjects(root);
