@@ -91,6 +91,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           }
           try {
             const x = ingestExportZip(db, store, path, data, new Date(), statSync(path).mtime);
+            for (const message of x.errors) fail(`${scrubPath(path)}: ${scrubText(message).value}`);
             if (!x.isExport) {
               skipped++;
               continue;
@@ -109,9 +110,8 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
               for (const [status, n] of Object.entries(byStatus)) into[status] = (into[status] ?? 0) + (n ?? 0);
             }
             for (const [category, n] of Object.entries(x.notIngested)) notIngested[category] = (notIngested[category] ?? 0) + n;
-            for (const message of x.errors) fail(`${scrubPath(path)}: ${scrubText(message).value}`);
           } catch (err) {
-            fail(`${scrubPath(path)}: ${err instanceof Error ? err.message : String(err)}`);
+            fail(`${scrubPath(path)}: ${scrubText(err instanceof Error ? err.message : String(err)).value}`);
           }
           continue;
         }

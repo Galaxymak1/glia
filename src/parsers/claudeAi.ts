@@ -51,7 +51,8 @@ export function isIngestedEntry(entry: string): boolean {
 export function looksLikeExportJson(entry: string, data: unknown): boolean {
   switch (exportCategory(entry)) {
     case "conversations":
-      return Array.isArray(data) && data.length > 0 && data.every((c) => isObject(c) && !!str(c.uuid) && Array.isArray(c.chat_messages));
+      // One odd conversation does not reject the file: the parser skips what it cannot read.
+      return Array.isArray(data) && data.some((c) => isObject(c) && !!str(c.uuid) && Array.isArray(c.chat_messages));
     case "projects":
       return isObject(data) && !!str(data.uuid) && ("docs" in data || "prompt_template" in data);
     case "memories":
@@ -265,12 +266,20 @@ export function parseDesignChat(data: unknown): ParsedSource | null {
 const BLOCK_TAGS = new Set(["p", "div", "br", "hr", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "td", "th", "table", "pre", "section", "article", "header", "footer", "blockquote"]);
 const NAMED_ENTITIES: Record<string, string> = { nbsp: " ", lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" };
 
-/** End of the tag opening at `start` (just past its `>`), skipping quoted attribute values; -1 if it never closes. */
+/**
+ * End of the tag opening at `start` (just past its `>`), skipping quoted attribute values; -1
+ * if it never closes. A quote opens a value only right after `=`, as in a browser: the
+ * apostrophe of `title=don't` is part of an unquoted value.
+ */
 function tagEnd(html: string, start: number): number {
+  let afterEquals = false;
   for (let i = start + 1; i < html.length; i++) {
-    const ch = html[i];
+    const ch = html[i]!;
     if (ch === ">") return i + 1;
-    if (ch === '"' || ch === "'") {
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "\f") continue;
+    const opensValue = afterEquals && (ch === '"' || ch === "'");
+    afterEquals = ch === "=";
+    if (opensValue) {
       const close = html.indexOf(ch, i + 1);
       if (close < 0) return -1;
       i = close;
