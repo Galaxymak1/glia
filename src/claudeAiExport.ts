@@ -1,0 +1,316 @@
+// Ingests a claude.ai export ZIP: kept entries are stored one by one in the evidence store
+// (scrubbed there, #3), then parsed from their stored copies into sources and turns.
+
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import type Database from "better-sqlite3";
+import { unzipSync } from "fflate";
+import { type EvidenceStore, type RawFile, scrubPath } from "./evidence.js";
+import {
+  CAI_PARSER_VERSION,
+  type CaiStats,
+  EXPORT_CATEGORIES,
+  type ExportCategory,
+  exportCategory,
+  htmlText,
+  isIngestedEntry,
+  looksLikeExportJson,
+  type ParsedSource,
+  parseArtifact,
+  parseConversations,
+  parseDesignChat,
+  parseMemories,
+  parseProject,
+} from "./parsers/claudeAi.js";
+import { findSource, writeSource } from "./sources.js";
+
+/** Limits against a ZIP bomb: entries are inflated in memory. */
+export const MAX_ENTRY_BYTES = 512 * 1024 * 1024;
+export const MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
+
+export type SourceStatus = "new" | "updated" | "unchanged" | "older";
+
+export interface ExportResult {
+  /** False when the ZIP holds nothing from a claude.ai export; it was then left alone. */
+  isExport: boolean;
+  entries: { created: number; repaired: number; unchanged: number; bytes: number; storedBytes: number; redactions: number };
+  /** Entries left out, by category (or "other" inside a kept category, e.g. bundled app code). */
+  notIngested: Record<string, number>;
+  /** Sources by kind, then by status. */
+  sources: Record<string, Partial<Record<SourceStatus, number>>>;
+  turnsWritten: number;
+  turnsRemoved: number;
+  stats: CaiStats;
+  /** Entries that could not be stored or parsed, with a reason; the rest of the ZIP is still ingested. */
+  errors: string[];
+}
+
+/** Entry names of a ZIP, without inflating anything. */
+function entryNames(data: Uint8Array): { name: string; originalSize: number }[] {
+  const names: { name: string; originalSize: number }[] = [];
+  unzipSync(data, {
+    filter: (f) => {
+      names.push({ name: f.name, originalSize: f.originalSize });
+      return false;
+    },
+  });
+  return names;
+}
+
+interface DirectoryEntry {
+  name: string;
+  /** When the export wrote the entry; null for the DOS zero date (1980), which claude.ai writes. */
+  time: string | null;
+}
+
+/**
+ * A ZIP's central directory, read through `read(position, length)` so a file need not be
+ * loaded whole. Times: the extended timestamp (UTC) when present, else the DOS date and time
+ * (no time zone, read as UTC). Null when there is no readable directory (not a ZIP, ZIP64).
+ */
+function centralDirectory(size: number, read: (position: number, length: number) => Uint8Array): DirectoryEntry[] | null {
+  const tailLength = Math.min(size, 22 + 0xffff);
+  const tail = read(size - tailLength, tailLength);
+  const tv = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+  let eocd = -1;
+  for (let i = tail.length - 22; i >= 0; i--) {
+    if (tv.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return null;
+  const count = tv.getUint16(eocd + 10, true);
+  const cdSize = tv.getUint32(eocd + 12, true);
+  const cdOffset = tv.getUint32(eocd + 16, true);
+  if (cdOffset + cdSize > size) return null;
+  const cd = read(cdOffset, cdSize);
+  const view = new DataView(cd.buffer, cd.byteOffset, cd.byteLength);
+  const decoder = new TextDecoder();
+  const entries: DirectoryEntry[] = [];
+  for (let n = 0, p = 0; n < count && p + 46 <= cd.length && view.getUint32(p, true) === 0x02014b50; n++) {
+    const nameLength = view.getUint16(p + 28, true);
+    const extraLength = view.getUint16(p + 30, true);
+    const commentLength = view.getUint16(p + 32, true);
+    if (p + 46 + nameLength + extraLength > cd.length) break;
+    const name = decoder.decode(cd.subarray(p + 46, p + 46 + nameLength));
+    const t = view.getUint16(p + 12, true);
+    const d = view.getUint16(p + 14, true);
+    let ms = Date.UTC(1980 + (d >> 9), ((d >> 5) & 15) - 1, d & 31, t >> 11, (t >> 5) & 63, (t & 31) * 2);
+    for (let e = p + 46 + nameLength; e + 4 <= p + 46 + nameLength + extraLength; ) {
+      const id = view.getUint16(e, true);
+      const length = view.getUint16(e + 2, true);
+      if (id === 0x5455 && length >= 5 && e + 9 <= cd.length && view.getUint8(e + 4) & 1) ms = view.getUint32(e + 5, true) * 1000;
+      e += 4 + length;
+    }
+    entries.push({ name, time: Number.isFinite(ms) && ms >= Date.UTC(1981, 0, 1) ? new Date(ms).toISOString() : null });
+    p += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+/** When the export wrote each entry, for entries with a real date (see `centralDirectory`). */
+export function entryTimes(zip: Uint8Array): Map<string, string> {
+  const entries = centralDirectory(zip.length, (position, length) => zip.subarray(position, position + length)) ?? [];
+  return new Map(entries.filter((e) => e.time).map((e) => [e.name, e.time!]));
+}
+
+/**
+ * Whether a ZIP file may be a claude.ai export, from its central directory alone, so an
+ * unrelated (possibly huge) archive is never loaded. Null when the directory cannot be read:
+ * the caller then reads the file whole.
+ */
+export function mayBeExportFile(path: string): boolean | null {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    const entries = centralDirectory(size, (position, length) => {
+      const buf = Buffer.alloc(length);
+      readSync(fd, buf, 0, length, position);
+      return buf;
+    });
+    return entries && entries.some((e) => exportCategory(e.name));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * `zipTime` is the ZIP file's modification time: the export's date when its entries carry none
+ * (it dates claude.ai memory, which has no date of its own).
+ */
+export function ingestExportZip(
+  db: Database.Database,
+  store: EvidenceStore,
+  zipPath: string,
+  data: Buffer,
+  receivedAt = new Date(),
+  zipTime: Date | null = null,
+): ExportResult {
+  const result: ExportResult = {
+    isExport: false,
+    entries: { created: 0, repaired: 0, unchanged: 0, bytes: 0, storedBytes: 0, redactions: 0 },
+    notIngested: {},
+    sources: {},
+    turnsWritten: 0,
+    turnsRemoved: 0,
+    stats: { skippedBlocks: {} },
+    errors: [],
+  };
+  const zip = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  const listing = entryNames(zip).filter((e) => !e.name.endsWith("/"));
+  if (!listing.some((e) => exportCategory(e.name))) return result;
+
+  let total = 0;
+  for (const e of listing) {
+    if (!isIngestedEntry(e.name)) {
+      const category: ExportCategory | "other" = exportCategory(e.name) ?? "other";
+      result.notIngested[category] = (result.notIngested[category] ?? 0) + 1;
+      continue;
+    }
+    if (e.originalSize > MAX_ENTRY_BYTES) throw new Error(`${e.name}: ${e.originalSize} bytes inflated, over the ${MAX_ENTRY_BYTES} limit`);
+    total += e.originalSize;
+    if (total > MAX_TOTAL_BYTES) throw new Error(`more than ${MAX_TOTAL_BYTES} bytes inflated, over the limit`);
+  }
+  const files = unzipSync(zip, { filter: (f) => isIngestedEntry(f.name) });
+  // Inflated entries as Buffers over the same memory, without a copy.
+  const bytesOf = (name: string) => Buffer.from(files[name]!.buffer, files[name]!.byteOffset, files[name]!.byteLength);
+  const origin = (name: string) => `${scrubPath(zipPath)}!/${name}`;
+
+  // File names alone do not make an export: a JSON entry is kept only with the shape claude.ai
+  // gives it, and an artifact folder's files only with a recognised artifact.json. A ZIP with
+  // no recognised entry is left alone. An entry named like an export's but not valid JSON is never
+  // stored, and always reported: it may be a damaged export.
+  const shapes = new Map<string, "ok" | "unreadable" | "unrecognised">();
+  const shape = (name: string) => {
+    let r = shapes.get(name);
+    if (!r) {
+      try {
+        r = looksLikeExportJson(name, JSON.parse(bytesOf(name).toString("utf8"))) ? "ok" : "unrecognised";
+      } catch {
+        r = "unreadable";
+      }
+      shapes.set(name, r);
+    }
+    return r;
+  };
+  const verdict = (name: string) => {
+    const folder = /^artifacts\/[^/]+\//.exec(name)?.[0];
+    if (folder && (!files[`${folder}artifact.json`] || shape(`${folder}artifact.json`) !== "ok")) return "unrecognised";
+    return name.endsWith(".json") ? shape(name) : "ok";
+  };
+  const verdicts = Object.keys(files).map((name) => [name, verdict(name)] as const);
+  for (const [name, v] of verdicts) {
+    if (v === "unreadable") result.errors.push(`${origin(name)}: not valid JSON, not stored`);
+  }
+  if (!verdicts.some(([, v]) => v === "ok")) {
+    // Still an export when it holds a category that is never ingested (account metadata):
+    // nothing of it is stored either way, and it is reported as left out.
+    const known = Object.keys(result.notIngested).some((c) => c in EXPORT_CATEGORIES && !EXPORT_CATEGORIES[c as ExportCategory]);
+    if (!known) return { ...result, notIngested: {} };
+    const unrecognised = verdicts.filter(([, v]) => v === "unrecognised").length;
+    if (unrecognised) result.notIngested.unrecognised = unrecognised;
+    result.isExport = true;
+    return result;
+  }
+  for (const [name, v] of verdicts) {
+    if (v === "unreadable") delete files[name];
+    if (v !== "unrecognised") continue;
+    delete files[name];
+    result.notIngested.unrecognised = (result.notIngested.unrecognised ?? 0) + 1;
+  }
+  const exportedAt = entryTimes(zip);
+
+  result.isExport = true;
+  // Store every kept entry first: the evidence store scrubs it, and parsing reads it back.
+  const stored = new Map<string, RawFile>();
+  for (const name of Object.keys(files).sort()) {
+    try {
+      let bytes = bytesOf(name);
+      if (name.endsWith(".html")) {
+        // Stored as its visible text: markup and entities can hide a secret from the scrubber.
+        const html = bytes.toString("utf8");
+        if (!Buffer.from(html, "utf8").equals(bytes)) throw new Error(`${origin(name)}: not valid UTF-8, not stored`);
+        bytes = Buffer.from(htmlText(html), "utf8");
+      }
+      const r = store.put(`${zipPath}!/${name}`, bytes, receivedAt);
+      if (r.created) {
+        result.entries.created++;
+        result.entries.bytes += r.file.bytes;
+        result.entries.storedBytes += r.file.stored_bytes;
+        result.entries.redactions += r.file.redactions;
+      } else if (r.repaired) result.entries.repaired++;
+      else result.entries.unchanged++;
+      stored.set(name, r.file);
+    } catch (err) {
+      result.errors.push(err instanceof Error ? err.message : String(err));
+    }
+    delete files[name]; // parsing reads the stored copy: free the inflated entry
+  }
+
+  // One transaction for the whole export: each source still gets its own savepoint in writeSource.
+  db.transaction(() => {
+    const index = (parsed: ParsedSource | null, raw: RawFile, rawIsWhole = true) => {
+      if (!parsed) return;
+      const status = indexSource(db, parsed, raw, rawIsWhole, result);
+      const byKind = (result.sources[parsed.source.kind] ??= {});
+      byKind[status] = (byKind[status] ?? 0) + 1;
+    };
+    const readJson = (name: string): unknown => JSON.parse(store.read(stored.get(name)!.sha256));
+    const artifacts = new Map<string, string[]>();
+    for (const name of stored.keys()) {
+      try {
+        const category = exportCategory(name);
+        if (category === "conversations") for (const p of parseConversations(readJson(name), result.stats)) index(p, stored.get(name)!);
+        else if (category === "projects") index(parseProject(readJson(name)), stored.get(name)!);
+        else if (category === "memories") index(parseMemories(readJson(name), exportedAt.get(name) ?? zipTime?.toISOString() ?? null), stored.get(name)!);
+        else if (category === "design_chats") index(parseDesignChat(readJson(name)), stored.get(name)!);
+        else if (category === "frames") {
+          const id = name.split("/")[1]!;
+          artifacts.set(id, [...(artifacts.get(id) ?? []), name]);
+        }
+      } catch (err) {
+        result.errors.push(`${origin(name)}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    for (const [id, names] of artifacts) {
+      const dir = `artifacts/${id}/`;
+      try {
+        if (!stored.has(`${dir}artifact.json`)) continue;
+        const page = stored.has(`${dir}page.md`) ? store.read(stored.get(`${dir}page.md`)!.sha256) : null;
+        const html = new Map<string, string>();
+        for (const n of names.filter((n) => n.startsWith(`${dir}versions/`))) html.set(n.slice(`${dir}versions/`.length), store.read(stored.get(n)!.sha256));
+        const comments = stored.has(`${dir}comments.json`) ? readJson(`${dir}comments.json`) : [];
+        const parsed = parseArtifact(readJson(`${dir}artifact.json`), page, html, comments);
+        // The source points at the entry its doc turn came from (the page, else the newest HTML
+        // version), else at artifact.json.
+        const doc = parsed?.turns.find((t) => t.role === "doc")?.externalUuid;
+        const main = doc === "page" ? `${dir}page.md` : doc?.startsWith("version/") ? `${dir}versions/${doc.slice("version/".length)}` : `${dir}artifact.json`;
+        // Its other entries (artifact.json, comments.json) feed it too: no shortcut on the main one.
+        index(parsed, stored.get(main)!, false);
+      } catch (err) {
+        result.errors.push(`${origin(dir)}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  })();
+  return result;
+}
+
+/**
+ * Writes one parsed source unless the stored one is as new: a source from another export
+ * replaces it only when its `updated_at` is not earlier (conversations are upserted by uuid
+ * and updated_at, SPEC.md), so re-importing an older export changes nothing, also after a
+ * parser change: an older export lacks the newer turns, unlike a Claude Code transcript. When `raw` is
+ * the source's only input (`rawIsWhole`), the same raw copy means nothing changed.
+ */
+function indexSource(db: Database.Database, parsed: ParsedSource, raw: RawFile, rawIsWhole: boolean, result: ExportResult): SourceStatus {
+  const { source } = parsed;
+  const existing = findSource(db, source.kind, source.external_id);
+  const sameParser = existing?.parser_version === CAI_PARSER_VERSION;
+  if (existing && sameParser && rawIsWhole && existing.raw_sha256 === raw.sha256) return "unchanged";
+  if (existing && (source.updated_at ?? "") < (existing.updated_at ?? "")) return "older";
+  const written = writeSource(db, { ...source, raw_path: raw.stored_path, raw_sha256: raw.sha256, parser_version: CAI_PARSER_VERSION }, parsed.turns);
+  result.turnsWritten += written.turnsWritten;
+  result.turnsRemoved += written.turnsRemoved;
+  if (!existing) return "new";
+  return sameParser && !written.turnsWritten && !written.turnsRemoved ? "unchanged" : "updated";
+}

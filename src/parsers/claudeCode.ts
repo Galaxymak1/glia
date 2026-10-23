@@ -5,7 +5,7 @@
 
 import { basename, dirname, join, relative } from "node:path";
 
-export const CC_PARSER_VERSION = "cc@1";
+export const CC_PARSER_VERSION = "cc@2";
 
 export type ClaudeCodeFile =
   | { kind: "session"; projectDir: string; sessionId: string }

@@ -6,6 +6,12 @@ export interface Migration {
   version: number;
   name: string;
   sql: string;
+  /**
+   * Rebuilds a table that others reference (SQLite cannot alter a CHECK in place): foreign
+   * keys are switched off around the migration, as SQLite's table-rebuild procedure requires,
+   * and checked before it commits.
+   */
+  rebuildsTables?: boolean;
 }
 
 // Append only: never edit a migration that has shipped; add a new one.
@@ -114,6 +120,34 @@ export const migrations: Migration[] = [
       CREATE INDEX raw_files_origin ON raw_files (origin_path, received_at);
     `,
   },
+  {
+    version: 3,
+    name: "claude.ai source kinds",
+    rebuildsTables: true,
+    sql: `
+      -- New source kinds for the claude.ai export (#5): cad = Claude Design chat,
+      -- caa = claude.ai artifact or doc. Same columns as v1; only the CHECK changes.
+      CREATE TABLE sources_v3 (
+        id             INTEGER PRIMARY KEY,
+        kind           TEXT    NOT NULL CHECK (kind IN ('cc', 'cai', 'cap', 'cad', 'caa', 'mem')),
+        external_id    TEXT    NOT NULL,
+        title          TEXT,
+        project_hint   TEXT,
+        cwd            TEXT,
+        git_remote     TEXT,
+        created_at     TEXT,
+        updated_at     TEXT,
+        raw_path       TEXT    NOT NULL,
+        raw_sha256     TEXT    NOT NULL,
+        parser_version TEXT    NOT NULL,
+        excluded       INTEGER NOT NULL DEFAULT 0 CHECK (excluded IN (0, 1)),
+        UNIQUE (kind, external_id)
+      );
+      INSERT INTO sources_v3 SELECT * FROM sources;
+      DROP TABLE sources;
+      ALTER TABLE sources_v3 RENAME TO sources;
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {
@@ -127,13 +161,24 @@ export function migrate(db: Database): number[] {
     if (m.version <= schemaVersion(db)) continue;
     // IMMEDIATE takes the write lock up front; re-checking inside it means a
     // concurrent `brain init` that got there first turns this into a no-op.
-    const ran = db.transaction(() => {
-      if (m.version <= schemaVersion(db)) return false;
-      db.exec(m.sql);
-      db.pragma(`user_version = ${m.version}`);
-      return true;
-    }).immediate();
-    if (ran) applied.push(m.version);
+    // Must be set outside the transaction: inside one, SQLite ignores it. With foreign keys
+    // on, dropping the old table would cascade-delete every turn.
+    if (m.rebuildsTables) db.pragma("foreign_keys = OFF");
+    try {
+      const ran = db.transaction(() => {
+        if (m.version <= schemaVersion(db)) return false;
+        db.exec(m.sql);
+        if (m.rebuildsTables) {
+          const broken = db.pragma("foreign_key_check") as unknown[];
+          if (broken.length) throw new Error(`migration ${m.version}: ${broken.length} foreign key violations`);
+        }
+        db.pragma(`user_version = ${m.version}`);
+        return true;
+      }).immediate();
+      if (ran) applied.push(m.version);
+    } finally {
+      if (m.rebuildsTables) db.pragma("foreign_keys = ON");
+    }
   }
   return applied;
 }
