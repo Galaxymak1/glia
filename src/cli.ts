@@ -7,6 +7,8 @@ import { type Config, isExcludedPath, loadConfig } from "./config.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
 import { isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
 import { indexClaudeCodeFile } from "./sources.js";
+import { ingestExportZip, mayBeExportFile } from "./claudeAiExport.js";
+import { scrubText } from "./scrub.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
@@ -16,7 +18,7 @@ Commands:
   init                          Create the database, or apply pending migrations
   scrub --dry-run [path...]     Report the secrets scrubbing would remove (default: ~/.claude/projects)
   ingest <path...>              Scrub and store raw files, then parse Claude Code transcripts and
-                                memory into sources and turns (idempotent)
+                                memory, and claude.ai export ZIPs, into sources and turns (idempotent)
 
 Options:
   --db <path>   Database file (default: $BRAIN_DB, else ~/.local/share/ai_second_brain/brain.db)
@@ -49,6 +51,9 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
     const parsed = { session: 0, subagent: 0, memory: 0 };
     let parsedUnchanged = 0, turnsWritten = 0, turnsRemoved = 0, malformed = 0;
     const skippedTypes: Record<string, number> = {};
+    const exportTotals = { zips: 0, turnsWritten: 0, turnsRemoved: 0 };
+    const exportSources: Record<string, Record<string, number>> = {};
+    const notIngested: Record<string, number> = {};
     const fail = (message: string) => {
       failed++;
       console.error(`brain: ${message}`);
@@ -69,14 +74,54 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
         continue;
       }
       for (const path of walk(root, (p, err) => fail(fsError(p, err)))) {
-        if (!isScannable(path)) {
-          skipped++;
-          continue;
-        }
-        // Nothing from an excluded project reaches the store, whatever the file: checked on
-        // every folder from the root down, and on the projects/ view, which names the project.
+        // Nothing from an excluded project reaches the store, whatever the file (an export ZIP
+        // included): checked on every folder from the root down, and on the projects/ view,
+        // which names the project.
         if (isExcludedPath(relative(root, path), config) || isExcludedPath(view(path), config)) {
           excluded++;
+          continue;
+        }
+        if (path.endsWith(".zip")) {
+          let data: Buffer;
+          try {
+            // An archive that cannot be an export is never loaded (it may be huge, or damaged).
+            if (mayBeExportFile(path) === false) {
+              skipped++;
+              continue;
+            }
+            data = readFileSync(path);
+          } catch (err) {
+            fail(fsError(path, err));
+            continue;
+          }
+          try {
+            const x = ingestExportZip(db, store, path, data, new Date(), statSync(path).mtime);
+            for (const message of x.errors) fail(scrubText(message).value); // each names its ZIP entry
+            if (!x.isExport) {
+              skipped++;
+              continue;
+            }
+            exportTotals.zips++;
+            created += x.entries.created;
+            repaired += x.entries.repaired;
+            unchanged += x.entries.unchanged;
+            bytes += x.entries.bytes;
+            storedBytes += x.entries.storedBytes;
+            redactions += x.entries.redactions;
+            exportTotals.turnsWritten += x.turnsWritten;
+            exportTotals.turnsRemoved += x.turnsRemoved;
+            for (const [kind, byStatus] of Object.entries(x.sources)) {
+              const into = (exportSources[kind] ??= {});
+              for (const [status, n] of Object.entries(byStatus)) into[status] = (into[status] ?? 0) + (n ?? 0);
+            }
+            for (const [category, n] of Object.entries(x.notIngested)) notIngested[category] = (notIngested[category] ?? 0) + n;
+          } catch (err) {
+            fail(`${scrubPath(path)}: ${scrubText(err instanceof Error ? err.message : String(err)).value}`);
+          }
+          continue;
+        }
+        if (!isScannable(path)) {
+          skipped++;
           continue;
         }
         let data: Buffer;
@@ -123,6 +168,18 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
       `Parsed ${parsed.session} sessions, ${parsed.subagent} subagent transcripts, ${parsed.memory} memory files ` +
         `(${turnsWritten} turns written, ${turnsRemoved} removed); ${parsedUnchanged} already up to date; ${malformed} malformed lines`,
     );
+    if (exportTotals.zips) {
+      const kinds: Record<string, string> = { cai: "conversations", cap: "projects", mem: "memory sets", cad: "design chats", caa: "artifacts" };
+      const parts = Object.entries(exportSources).map(
+        ([kind, byStatus]) => `${kinds[kind] ?? kind} ${Object.entries(byStatus).map(([status, n]) => `${n} ${status}`).join("/")}`,
+      );
+      const left = Object.entries(notIngested).map(([category, n]) => `${category} ${n}`);
+      console.log(
+        `claude.ai export (${exportTotals.zips} ZIPs): ${parts.join(", ") || "nothing parsed"} ` +
+          `(${exportTotals.turnsWritten} turns written, ${exportTotals.turnsRemoved} removed)` +
+          (left.length ? `; entries not ingested: ${left.join(", ")}` : ""),
+      );
+    }
     const types = Object.entries(skippedTypes).sort((a, b) => b[1] - a[1]);
     if (types.length) console.log(`Skipped non-turn lines: ${types.map(([t, n]) => `${t} ${n}`).join(", ")}`);
     return failed ? 1 : 0;
