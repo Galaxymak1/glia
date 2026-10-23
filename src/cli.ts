@@ -7,7 +7,7 @@ import { type Config, isExcludedPath, loadConfig } from "./config.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
 import { isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
 import { indexClaudeCodeFile } from "./sources.js";
-import { ingestExportZip } from "./claudeAiExport.js";
+import { ingestExportZip, mayBeExportFile } from "./claudeAiExport.js";
 import { scrubText } from "./scrub.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
@@ -51,7 +51,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
     const parsed = { session: 0, subagent: 0, memory: 0 };
     let parsedUnchanged = 0, turnsWritten = 0, turnsRemoved = 0, malformed = 0;
     const skippedTypes: Record<string, number> = {};
-    const exportTotals = { zips: 0, entries: 0, turnsWritten: 0, turnsRemoved: 0 };
+    const exportTotals = { zips: 0, turnsWritten: 0, turnsRemoved: 0 };
     const exportSources: Record<string, Record<string, number>> = {};
     const notIngested: Record<string, number> = {};
     const fail = (message: string) => {
@@ -84,6 +84,11 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
         if (path.endsWith(".zip")) {
           let data: Buffer;
           try {
+            // An archive that cannot be an export is never loaded (it may be huge, or damaged).
+            if (mayBeExportFile(path) === false) {
+              skipped++;
+              continue;
+            }
             data = readFileSync(path);
           } catch (err) {
             fail(fsError(path, err));
@@ -91,7 +96,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           }
           try {
             const x = ingestExportZip(db, store, path, data, new Date(), statSync(path).mtime);
-            for (const message of x.errors) fail(`${scrubPath(path)}: ${scrubText(message).value}`);
+            for (const message of x.errors) fail(scrubText(message).value); // each names its ZIP entry
             if (!x.isExport) {
               skipped++;
               continue;

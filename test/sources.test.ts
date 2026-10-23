@@ -42,7 +42,7 @@ describe("indexClaudeCodeFile", () => {
     const raw = put(sessionPath(), v1, "2026-10-20T10:00:00Z");
     expect(ix(raw, NO_EXCLUDES)).toMatchObject({ status: "new", kind: "session", turnsWritten: 2, turnsRemoved: 0 });
     expect(sources()).toEqual([
-      { kind: "cc", external_id: S, title: null, cwd: "/home/me/dev/brain", raw_sha256: raw.sha256, parser_version: "cc@1", created_at: "2026-10-20T10:00:01Z", updated_at: "2026-10-20T10:00:02Z" },
+      { kind: "cc", external_id: S, title: null, cwd: "/home/me/dev/brain", raw_sha256: raw.sha256, parser_version: "cc@2", created_at: "2026-10-20T10:00:01Z", updated_at: "2026-10-20T10:00:02Z" },
     ]);
     expect(turns().map((t) => [t.external_uuid, t.parent_uuid, t.role])).toEqual([["u1", null, "user"], ["a2", "u1", "assistant"]]);
     expect(ix(raw, NO_EXCLUDES)).toMatchObject({ status: "unchanged", turnsWritten: 0 });
@@ -97,7 +97,7 @@ describe("indexClaudeCodeFile", () => {
     db.prepare("UPDATE sources SET parser_version = 'cc@0'").run();
     for (const extra of ["x1", "x2", "x3"]) db.prepare("INSERT INTO turns (source_id, external_uuid, role, text) VALUES (1, ?, 'user', 'cc@0 only')").run(extra);
     expect(ix(put(sessionPath(), v2, "2026-10-20T10:15:00Z"), NO_EXCLUDES)).toMatchObject({ status: "updated", turnsRemoved: 3 });
-    expect(db.prepare("SELECT parser_version FROM sources").get()).toEqual({ parser_version: "cc@1" });
+    expect(db.prepare("SELECT parser_version FROM sources").get()).toEqual({ parser_version: "cc@2" });
     expect(turns().map((t) => t.external_uuid)).toEqual(["u1", "a2", "u3"]);
   });
 

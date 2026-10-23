@@ -182,7 +182,7 @@ export function parseConversations(data: unknown, stats: CaiStats): ParsedSource
         const text = texts.get(uuid)!;
         if (!text) continue;
         // Never its own parent, directly or through a cycle of empty messages.
-        const parent = str(m.parent_message_uuid) === uuid ? null : nearestStored(str(m.parent_message_uuid));
+        const parent = nearestStored(str(m.parent_message_uuid));
         turns.push({
           externalUuid: uuid,
           parentUuid: parent === uuid ? null : parent,

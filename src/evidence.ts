@@ -76,9 +76,10 @@ export class EvidenceStore {
     const text = data.toString("utf8");
     if (!Buffer.from(text, "utf8").equals(data)) throw new Error(`${origin}: not valid UTF-8, not stored`);
     // A .json file that does not parse (a truncated export) cannot be scrubbed safely.
-    if (originPath.endsWith(".json") && !scrubJsonSource(text)) throw new Error(`${origin}: not valid JSON, not stored`);
+    const json = originPath.endsWith(".json") ? scrubJsonSource(text) : null;
+    if (originPath.endsWith(".json") && !json) throw new Error(`${origin}: not valid JSON, not stored`);
 
-    const scrubbed = scrubFile(originPath, text);
+    const scrubbed = json ?? scrubFile(originPath, text);
     const gz = gzipSync(scrubbed.value);
     const storedPath = join(sha.slice(0, 2), `${sha}.gz`);
     writeAtomic(join(this.rawDir, storedPath), gz);
