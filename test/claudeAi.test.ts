@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strToU8, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { entryTimes, ingestExportZip } from "../src/claudeAiExport.js";
+import { entryTimes, ingestExportZip, mayBeExportFile } from "../src/claudeAiExport.js";
 import { openDb } from "../src/db.js";
 import { EvidenceStore } from "../src/evidence.js";
 import { migrate } from "../src/migrations.js";
@@ -184,6 +184,17 @@ describe("ingestExportZip", () => {
     expect(raws.join("\n")).not.toContain("<script>");
   });
 
+  it("tells from a ZIP file's directory alone whether it may be an export", () => {
+    const at = (name: string, data: Uint8Array) => {
+      writeFileSync(join(dir, name), data);
+      return mayBeExportFile(join(dir, name));
+    };
+    expect(at("export.zip", zip({ "conversations.json": "[]" }))).toBe(true);
+    expect(at("photos.zip", zip({ "IMG_1.txt": "hello", "nested/a.json": "{}" }))).toBe(false);
+    expect(at("empty.zip", zipSync({}))).toBe(false);
+    expect(at("garbage.zip", Buffer.from("not a zip at all"))).toBeNull();
+  });
+
   it("leaves a ZIP that is not a claude.ai export alone", () => {
     expect(ingestExportZip(db, store, "/x/photos.zip", zip({ "IMG_1.txt": "hello" }))).toMatchObject({ isExport: false });
     // Same file names as an export, other shapes: a ChatGPT export, a project with an artifacts/ folder.
@@ -234,7 +245,6 @@ describe("ingestExportZip", () => {
       "projects/broken.json": '{"uuid": "p2", "name": ',
     }));
     expect(r.sources).toEqual({ cap: { new: 1 } });
-    expect(r.errors).toHaveLength(1);
-    expect(r.errors[0]).toMatch(/projects\/broken\.json.*not valid JSON/);
+    expect(r.errors).toEqual(["/x/projects-000.zip!/projects/broken.json: not valid JSON, not stored"]);
   });
 });

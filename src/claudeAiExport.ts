@@ -1,9 +1,10 @@
 // Ingests a claude.ai export ZIP: kept entries are stored one by one in the evidence store
 // (scrubbed there, #3), then parsed from their stored copies into sources and turns.
 
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { unzipSync } from "fflate";
-import type { EvidenceStore, RawFile } from "./evidence.js";
+import { type EvidenceStore, type RawFile, scrubPath } from "./evidence.js";
 import {
   CAI_PARSER_VERSION,
   type CaiStats,
@@ -13,7 +14,6 @@ import {
   htmlText,
   isIngestedEntry,
   looksLikeExportJson,
-  newestVersion,
   type ParsedSource,
   parseArtifact,
   parseConversations,
@@ -56,44 +56,82 @@ function entryNames(data: Uint8Array): { name: string; originalSize: number }[] 
   return names;
 }
 
+interface DirectoryEntry {
+  name: string;
+  /** When the export wrote the entry; null for the DOS zero date (1980), which claude.ai writes. */
+  time: string | null;
+}
+
 /**
- * When the export wrote each entry, from the ZIP's central directory: the extended timestamp
- * (UTC) when present, else the DOS date and time (no time zone, read as UTC). Entries dated
- * 1980 (the DOS zero date, which claude.ai's exporter writes) and unreadable directories give
- * no time.
+ * A ZIP's central directory, read through `read(position, length)` so a file need not be
+ * loaded whole. Times: the extended timestamp (UTC) when present, else the DOS date and time
+ * (no time zone, read as UTC). Null when there is no readable directory (not a ZIP, ZIP64).
  */
-export function entryTimes(zip: Uint8Array): Map<string, string> {
-  const times = new Map<string, string>();
-  const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+function centralDirectory(size: number, read: (position: number, length: number) => Uint8Array): DirectoryEntry[] | null {
+  const tailLength = Math.min(size, 22 + 0xffff);
+  const tail = read(size - tailLength, tailLength);
+  const tv = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
   let eocd = -1;
-  for (let i = zip.length - 22; i >= Math.max(0, zip.length - 22 - 0xffff); i--) {
-    if (view.getUint32(i, true) === 0x06054b50) {
+  for (let i = tail.length - 22; i >= 0; i--) {
+    if (tv.getUint32(i, true) === 0x06054b50) {
       eocd = i;
       break;
     }
   }
-  if (eocd < 0) return times;
-  const count = view.getUint16(eocd + 10, true);
-  let p = view.getUint32(eocd + 16, true);
+  if (eocd < 0) return null;
+  const count = tv.getUint16(eocd + 10, true);
+  const cdSize = tv.getUint32(eocd + 12, true);
+  const cdOffset = tv.getUint32(eocd + 16, true);
+  if (cdOffset + cdSize > size) return null;
+  const cd = read(cdOffset, cdSize);
+  const view = new DataView(cd.buffer, cd.byteOffset, cd.byteLength);
   const decoder = new TextDecoder();
-  for (let n = 0; n < count && p + 46 <= zip.length && view.getUint32(p, true) === 0x02014b50; n++) {
+  const entries: DirectoryEntry[] = [];
+  for (let n = 0, p = 0; n < count && p + 46 <= cd.length && view.getUint32(p, true) === 0x02014b50; n++) {
     const nameLength = view.getUint16(p + 28, true);
     const extraLength = view.getUint16(p + 30, true);
     const commentLength = view.getUint16(p + 32, true);
-    const name = decoder.decode(zip.subarray(p + 46, p + 46 + nameLength));
+    if (p + 46 + nameLength + extraLength > cd.length) break;
+    const name = decoder.decode(cd.subarray(p + 46, p + 46 + nameLength));
     const t = view.getUint16(p + 12, true);
     const d = view.getUint16(p + 14, true);
     let ms = Date.UTC(1980 + (d >> 9), ((d >> 5) & 15) - 1, d & 31, t >> 11, (t >> 5) & 63, (t & 31) * 2);
     for (let e = p + 46 + nameLength; e + 4 <= p + 46 + nameLength + extraLength; ) {
       const id = view.getUint16(e, true);
-      const size = view.getUint16(e + 2, true);
-      if (id === 0x5455 && size >= 5 && view.getUint8(e + 4) & 1) ms = view.getUint32(e + 5, true) * 1000;
-      e += 4 + size;
+      const length = view.getUint16(e + 2, true);
+      if (id === 0x5455 && length >= 5 && e + 9 <= cd.length && view.getUint8(e + 4) & 1) ms = view.getUint32(e + 5, true) * 1000;
+      e += 4 + length;
     }
-    if (Number.isFinite(ms) && ms >= Date.UTC(1981, 0, 1)) times.set(name, new Date(ms).toISOString());
+    entries.push({ name, time: Number.isFinite(ms) && ms >= Date.UTC(1981, 0, 1) ? new Date(ms).toISOString() : null });
     p += 46 + nameLength + extraLength + commentLength;
   }
-  return times;
+  return entries;
+}
+
+/** When the export wrote each entry, for entries with a real date (see `centralDirectory`). */
+export function entryTimes(zip: Uint8Array): Map<string, string> {
+  const entries = centralDirectory(zip.length, (position, length) => zip.subarray(position, position + length)) ?? [];
+  return new Map(entries.filter((e) => e.time).map((e) => [e.name, e.time!]));
+}
+
+/**
+ * Whether a ZIP file may be a claude.ai export, from its central directory alone, so an
+ * unrelated (possibly huge) archive is never loaded. Null when the directory cannot be read:
+ * the caller then reads the file whole.
+ */
+export function mayBeExportFile(path: string): boolean | null {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    const entries = centralDirectory(size, (position, length) => {
+      const buf = Buffer.alloc(length);
+      readSync(fd, buf, 0, length, position);
+      return buf;
+    });
+    return entries && entries.some((e) => exportCategory(e.name));
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -133,7 +171,10 @@ export function ingestExportZip(
     total += e.originalSize;
     if (total > MAX_TOTAL_BYTES) throw new Error(`more than ${MAX_TOTAL_BYTES} bytes inflated, over the limit`);
   }
-  const files = unzipSync(zip, { filter: (f) => isIngestedEntry(f.name) && f.originalSize <= MAX_ENTRY_BYTES });
+  const files = unzipSync(zip, { filter: (f) => isIngestedEntry(f.name) });
+  // Inflated entries as Buffers over the same memory, without a copy.
+  const bytesOf = (name: string) => Buffer.from(files[name]!.buffer, files[name]!.byteOffset, files[name]!.byteLength);
+  const origin = (name: string) => `${scrubPath(zipPath)}!/${name}`;
 
   // File names alone do not make an export: a JSON entry is kept only with the shape claude.ai
   // gives it, and an artifact folder's files only with a recognised artifact.json. A ZIP with
@@ -144,7 +185,7 @@ export function ingestExportZip(
     let r = shapes.get(name);
     if (!r) {
       try {
-        r = looksLikeExportJson(name, JSON.parse(Buffer.from(files[name]!).toString("utf8"))) ? "ok" : "unrecognised";
+        r = looksLikeExportJson(name, JSON.parse(bytesOf(name).toString("utf8"))) ? "ok" : "unrecognised";
       } catch {
         r = "unreadable";
       }
@@ -159,7 +200,7 @@ export function ingestExportZip(
   };
   const verdicts = Object.keys(files).map((name) => [name, verdict(name)] as const);
   for (const [name, v] of verdicts) {
-    if (v === "unreadable") result.errors.push(`${zipPath}!/${name}: not valid JSON, not stored`);
+    if (v === "unreadable") result.errors.push(`${origin(name)}: not valid JSON, not stored`);
   }
   if (!verdicts.some(([, v]) => v === "ok")) {
     // Still an export when it holds a category that is never ingested (account metadata):
@@ -184,11 +225,11 @@ export function ingestExportZip(
   const stored = new Map<string, RawFile>();
   for (const name of Object.keys(files).sort()) {
     try {
-      let bytes = Buffer.from(files[name]!);
+      let bytes = bytesOf(name);
       if (name.endsWith(".html")) {
         // Stored as its visible text: markup and entities can hide a secret from the scrubber.
         const html = bytes.toString("utf8");
-        if (!Buffer.from(html, "utf8").equals(bytes)) throw new Error(`${zipPath}!/${name}: not valid UTF-8, not stored`);
+        if (!Buffer.from(html, "utf8").equals(bytes)) throw new Error(`${origin(name)}: not valid UTF-8, not stored`);
         bytes = Buffer.from(htmlText(html), "utf8");
       }
       const r = store.put(`${zipPath}!/${name}`, bytes, receivedAt);
@@ -203,48 +244,54 @@ export function ingestExportZip(
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
+    delete files[name]; // parsing reads the stored copy: free the inflated entry
   }
 
-  const index = (parsed: ParsedSource | null, raw: RawFile, rawIsWhole = true) => {
-    if (!parsed) return;
-    const status = indexSource(db, parsed, raw, rawIsWhole, result);
-    const byKind = (result.sources[parsed.source.kind] ??= {});
-    byKind[status] = (byKind[status] ?? 0) + 1;
-  };
-  const readJson = (name: string): unknown => JSON.parse(store.read(stored.get(name)!.sha256));
-  const artifacts = new Map<string, string[]>();
-  for (const name of stored.keys()) {
-    try {
-      const category = exportCategory(name);
-      if (category === "conversations") for (const p of parseConversations(readJson(name), result.stats)) index(p, stored.get(name)!);
-      else if (category === "projects") index(parseProject(readJson(name)), stored.get(name)!);
-      else if (category === "memories") index(parseMemories(readJson(name), exportedAt.get(name) ?? zipTime?.toISOString() ?? null), stored.get(name)!);
-      else if (category === "design_chats") index(parseDesignChat(readJson(name)), stored.get(name)!);
-      else if (category === "frames") {
-        const id = name.split("/")[1]!;
-        artifacts.set(id, [...(artifacts.get(id) ?? []), name]);
+  // One transaction for the whole export: each source still gets its own savepoint in writeSource.
+  db.transaction(() => {
+    const index = (parsed: ParsedSource | null, raw: RawFile, rawIsWhole = true) => {
+      if (!parsed) return;
+      const status = indexSource(db, parsed, raw, rawIsWhole, result);
+      const byKind = (result.sources[parsed.source.kind] ??= {});
+      byKind[status] = (byKind[status] ?? 0) + 1;
+    };
+    const readJson = (name: string): unknown => JSON.parse(store.read(stored.get(name)!.sha256));
+    const artifacts = new Map<string, string[]>();
+    for (const name of stored.keys()) {
+      try {
+        const category = exportCategory(name);
+        if (category === "conversations") for (const p of parseConversations(readJson(name), result.stats)) index(p, stored.get(name)!);
+        else if (category === "projects") index(parseProject(readJson(name)), stored.get(name)!);
+        else if (category === "memories") index(parseMemories(readJson(name), exportedAt.get(name) ?? zipTime?.toISOString() ?? null), stored.get(name)!);
+        else if (category === "design_chats") index(parseDesignChat(readJson(name)), stored.get(name)!);
+        else if (category === "frames") {
+          const id = name.split("/")[1]!;
+          artifacts.set(id, [...(artifacts.get(id) ?? []), name]);
+        }
+      } catch (err) {
+        result.errors.push(`${origin(name)}: ${err instanceof Error ? err.message : String(err)}`);
       }
-    } catch (err) {
-      result.errors.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }
-  for (const [id, names] of artifacts) {
-    const dir = `artifacts/${id}/`;
-    try {
-      if (!stored.has(`${dir}artifact.json`)) continue;
-      const page = stored.has(`${dir}page.md`) ? store.read(stored.get(`${dir}page.md`)!.sha256) : null;
-      const html = new Map<string, string>();
-      for (const n of names.filter((n) => n.startsWith(`${dir}versions/`))) html.set(n.slice(`${dir}versions/`.length), store.read(stored.get(n)!.sha256));
-      const comments = stored.has(`${dir}comments.json`) ? readJson(`${dir}comments.json`) : [];
-      // The source points at its main content entry: the doc page, else the newest HTML version.
-      const newestHtml = newestVersion(html.keys());
-      const main = page !== null ? `${dir}page.md` : newestHtml ? `${dir}versions/${newestHtml}` : `${dir}artifact.json`;
-      // Its other entries (artifact.json, comments.json) feed it too: no shortcut on the main one.
-      index(parseArtifact(readJson(`${dir}artifact.json`), page, html, comments), stored.get(main)!, false);
-    } catch (err) {
-      result.errors.push(`${dir}: ${err instanceof Error ? err.message : String(err)}`);
+    for (const [id, names] of artifacts) {
+      const dir = `artifacts/${id}/`;
+      try {
+        if (!stored.has(`${dir}artifact.json`)) continue;
+        const page = stored.has(`${dir}page.md`) ? store.read(stored.get(`${dir}page.md`)!.sha256) : null;
+        const html = new Map<string, string>();
+        for (const n of names.filter((n) => n.startsWith(`${dir}versions/`))) html.set(n.slice(`${dir}versions/`.length), store.read(stored.get(n)!.sha256));
+        const comments = stored.has(`${dir}comments.json`) ? readJson(`${dir}comments.json`) : [];
+        const parsed = parseArtifact(readJson(`${dir}artifact.json`), page, html, comments);
+        // The source points at the entry its doc turn came from (the page, else the newest HTML
+        // version), else at artifact.json.
+        const doc = parsed?.turns.find((t) => t.role === "doc")?.externalUuid;
+        const main = doc === "page" ? `${dir}page.md` : doc?.startsWith("version/") ? `${dir}versions/${doc.slice("version/".length)}` : `${dir}artifact.json`;
+        // Its other entries (artifact.json, comments.json) feed it too: no shortcut on the main one.
+        index(parsed, stored.get(main)!, false);
+      } catch (err) {
+        result.errors.push(`${origin(dir)}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
-  }
+  })();
   return result;
 }
 
