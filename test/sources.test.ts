@@ -121,14 +121,14 @@ describe("indexClaudeCodeFile", () => {
 });
 
 describe("writeSource", () => {
-  it("scrubs titles and turn text once more before writing", () => {
+  it("scrubs titles, project hints and turn text once more before writing", () => {
     const P = "hunter2" + "hunter2";
     writeSource(
       db,
-      { kind: "caa", external_id: "a1", title: `DB_PASSWORD=${P}`, project_hint: null, cwd: null, created_at: null, updated_at: null, raw_path: "r", raw_sha256: "s", parser_version: "cai@1" },
+      { kind: "caa", external_id: "a1", title: `DB_PASSWORD=${P}`, project_hint: `DB_PASSWORD=${P}`, cwd: null, created_at: null, updated_at: null, raw_path: "r", raw_sha256: "s", parser_version: "cai@1" },
       [{ externalUuid: "t1", parentUuid: null, role: "doc", ts: null, text: `line\nDB_PASSWORD=${P}`, isSidechain: false }],
     );
-    expect(db.prepare("SELECT title FROM sources").get()).toEqual({ title: "DB_PASSWORD=[REDACTED:env_secret]" });
+    expect(db.prepare("SELECT title, project_hint FROM sources").get()).toEqual({ title: "DB_PASSWORD=[REDACTED:env_secret]", project_hint: "DB_PASSWORD=[REDACTED:env_secret]" });
     expect(turns().map((t) => t.text)).toEqual(["line\nDB_PASSWORD=[REDACTED:env_secret]"]);
   });
 });

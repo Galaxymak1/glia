@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
+import { strToU8, zipSync } from "fflate";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -124,6 +125,19 @@ describe("brain ingest of Claude Code projects", () => {
     const stored = readdirSync(join(dir, "cc-db", "raw"), { recursive: true }).filter((f) => String(f).endsWith(".gz"));
     const contents = stored.map((f) => gunzipSync(readFileSync(join(dir, "cc-db", "raw", String(f)))).toString("utf8"));
     expect(contents.some((c) => c.includes("acme"))).toBe(false);
+  });
+
+  it("keeps an export ZIP inside an excluded project out of the store", () => {
+    const root = join(dir, "zip-home");
+    makeProjects(root);
+    const conversations = [{ uuid: "c1", name: "acme deal", created_at: "2026-10-20", updated_at: "2026-10-20", chat_messages: [{ uuid: "m1", sender: "human", content: [{ type: "text", text: "acme" }] }] }];
+    writeFileSync(join(root, "projects", "-home-me-work-acme", "conversations-000.zip"), zipSync({ "conversations.json": strToU8(JSON.stringify(conversations)) }));
+    const config = join(dir, "zip-config.json");
+    writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
+    const db = join(dir, "zip-db", "brain.db");
+    const out = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(root, "projects")], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+    expect(out).toMatch(/^Stored 2 new files .*; 3 in excluded projects\n/);
+    expect(out).not.toMatch(/claude\.ai export/);
   });
 
   it("excludes a copied single project folder and a lone session file copied outside projects/", () => {
