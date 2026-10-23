@@ -9,6 +9,7 @@ import {
   type CaiStats,
   type ExportCategory,
   exportCategory,
+  htmlText,
   isIngestedEntry,
   type ParsedSource,
   parseArtifact,
@@ -85,7 +86,14 @@ export function ingestExportZip(db: Database.Database, store: EvidenceStore, zip
   const stored = new Map<string, RawFile>();
   for (const name of Object.keys(files).sort()) {
     try {
-      const r = store.put(`${zipPath}!/${name}`, Buffer.from(files[name]!), receivedAt);
+      let bytes = Buffer.from(files[name]!);
+      if (name.endsWith(".html")) {
+        // Stored as its visible text: markup and entities can hide a secret from the scrubber.
+        const html = bytes.toString("utf8");
+        if (!Buffer.from(html, "utf8").equals(bytes)) throw new Error(`${zipPath}!/${name}: not valid UTF-8, not stored`);
+        bytes = Buffer.from(htmlText(html), "utf8");
+      }
+      const r = store.put(`${zipPath}!/${name}`, bytes, receivedAt);
       if (r.created) {
         result.entries.created++;
         result.entries.bytes += r.file.bytes;

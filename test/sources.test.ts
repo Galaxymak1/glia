@@ -7,7 +7,7 @@ import { isExcludedPath, isExcludedProject } from "../src/config.js";
 import { openDb } from "../src/db.js";
 import { EvidenceStore } from "../src/evidence.js";
 import { migrate } from "../src/migrations.js";
-import { indexClaudeCodeFile } from "../src/sources.js";
+import { indexClaudeCodeFile, writeSource } from "../src/sources.js";
 
 const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
 const PROJECTS = "/home/me/.claude/projects";
@@ -117,6 +117,19 @@ describe("indexClaudeCodeFile", () => {
     expect(ix(put(sessionPath("-home-me-work-acme"), v1, "2026-10-20T10:00:00Z"), config)).toMatchObject({ status: "excluded" });
     expect(ix(put("/home/me/notes.md", "notes\n", "2026-10-20T10:00:00Z"), config)).toBeNull();
     expect([sources(), turns()]).toEqual([[], []]);
+  });
+});
+
+describe("writeSource", () => {
+  it("scrubs titles and turn text once more before writing", () => {
+    const P = "hunter2" + "hunter2";
+    writeSource(
+      db,
+      { kind: "caa", external_id: "a1", title: `DB_PASSWORD=${P}`, project_hint: null, cwd: null, created_at: null, updated_at: null, raw_path: "r", raw_sha256: "s", parser_version: "cai@1" },
+      [{ externalUuid: "t1", parentUuid: null, role: "doc", ts: null, text: `line\nDB_PASSWORD=${P}`, isSidechain: false }],
+    );
+    expect(db.prepare("SELECT title FROM sources").get()).toEqual({ title: "DB_PASSWORD=[REDACTED:env_secret]" });
+    expect(turns().map((t) => t.text)).toEqual(["line\nDB_PASSWORD=[REDACTED:env_secret]"]);
   });
 });
 

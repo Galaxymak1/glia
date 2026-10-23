@@ -42,6 +42,18 @@ describe("parser", () => {
     expect(stats.skippedBlocks).toEqual({ thinking: 1, injected_prompt_block: 1 });
   });
 
+  it("never makes a message its own parent, directly or through a cycle of empty messages", () => {
+    const c = {
+      uuid: "c2", name: "loop", created_at: "2026-10-20", updated_at: "2026-10-20",
+      chat_messages: [
+        msg("x1", "y1", "human", [{ type: "text", text: "x" }]),
+        msg("y1", "x1", "assistant", []), // empty: not stored
+        msg("s1", "s1", "human", [{ type: "text", text: "self" }]),
+      ],
+    };
+    expect(parseConversations([c], { skippedBlocks: {} })[0]!.turns.map((t) => [t.externalUuid, t.parentUuid])).toEqual([["x1", null], ["s1", null]]);
+  });
+
   it("keeps claude.ai memory and its files as one source", () => {
     const p = parseMemories({ account_uuid: "acct", conversations_memory: "Prefers SQLite.", memory_files: [{ path: "/a.md", content: "A", updated_at: "2026-10-01" }, { path: "/b.md", content: " ", updated_at: "2026-10-02" }] });
     expect(p!.source).toMatchObject({ kind: "mem", external_id: "claude.ai/acct" });
@@ -50,16 +62,18 @@ describe("parser", () => {
 
   it("uses an artifact's doc page, else the text of its newest HTML version, plus its comments", () => {
     const meta = { id: "a1", active_version: "v2", updated_at: "2026-10-21", versions: [{ id: "v1", title: "Old", created_at: "2026-10-20" }, { id: "v2", title: "Report", created_at: "2026-10-21" }] };
-    const html = new Map([["1789000000-aaaa.html", "<p>old</p>"], ["1790000000-bbbb.html", "<style>x{}</style><h1>RGESN &amp; report</h1><script>evil()</script>"]]);
-    const fromHtml = parseArtifact(meta, null, html, [{ comments: [{ body: "Fix the intro", created_at: "2026-10-21" }, { body: "Done", created_at: "2026-10-22" }] }]);
+    const html = new Map([["1789000000-aaaa.html", "<p>old</p>"], ["1790000000-bbbb.html", "<style>x{}</style><h1>RGESN &amp; report</h1><script>evil()</script>"]].map(([k, v]) => [k!, htmlText(v!)]));
+    const comments = [{ comments: [{ body: "Fix the intro", created_at: "2026-10-21" }, { body: " ", created_at: "2026-10-21" }, { body: "Done", created_at: "2026-10-22" }] }];
+    const fromHtml = parseArtifact(meta, null, html, comments);
     expect(fromHtml!.source).toMatchObject({ kind: "caa", external_id: "a1", title: "Report", created_at: "2026-10-20" });
     expect(fromHtml!.turns.map((t) => [t.externalUuid, t.parentUuid, t.role, t.text])).toEqual([
       ["version/1790000000-bbbb.html", null, "doc", "RGESN & report"],
       ["comment/0/0", null, "comment", "Fix the intro"],
-      ["comment/0/1", "comment/0/0", "comment", "Done"],
+      ["comment/0/2", "comment/0/0", "comment", "Done"], // the empty comment/0/1 is skipped
     ]);
     expect(parseArtifact(meta, "# Spec", html, [])!.turns.map((t) => t.text)).toEqual(["# Spec"]);
     expect(htmlText("<div>a</div>\n\n<div> b </div>")).toBe("a\nb");
+    expect(htmlText("<p>DB_PASS<b></b>WORD&#61;x &#x3d; &quot;q&quot;</p>")).toBe('DB_PASSWORD=x = "q"');
   });
 
   it("sorts entries into categories and keeps only the ingested ones", () => {
@@ -108,6 +122,20 @@ describe("ingestExportZip", () => {
     older.chat_messages = older.chat_messages.slice(0, 1);
     expect(ingestExportZip(db, store, "/x/old.zip", zip({ "conversations.json": JSON.stringify([older]) }))).toMatchObject({ sources: { cai: { older: 1 } }, turnsRemoved: 0 });
     expect(turnTexts()).toHaveLength(5);
+  });
+
+  it("stores an HTML artifact as its visible text, so markup cannot hide a secret from the scrubber", () => {
+    const P = "hunter2" + "hunter2";
+    const page = `<html><body><code>DB_PASSWORD=${P}</code><p>DB_PASS<b></b>WORD&#61;${P}</p><pre>&quot;password&quot;: &quot;${P}&quot;</pre><script>x()</script></body></html>`;
+    const r = ingestExportZip(db, store, "/x/frames-000.zip", zip({
+      "artifacts/a1/artifact.json": JSON.stringify({ id: "a1", active_version: "v1", updated_at: "2026-10-21", versions: [{ id: "v1", title: "Report", created_at: "2026-10-21" }] }),
+      "artifacts/a1/versions/1790000000-bbbb.html": page,
+    }));
+    expect(r).toMatchObject({ sources: { caa: { new: 1 } }, errors: [] });
+    expect(turnTexts().join("\n")).not.toContain(P);
+    const raws = (db.prepare("SELECT sha256 FROM raw_files").all() as { sha256: string }[]).map((x) => store.read(x.sha256));
+    expect(raws.join("\n")).not.toContain(P);
+    expect(raws.join("\n")).not.toContain("<script>");
   });
 
   it("leaves a ZIP that is not a claude.ai export alone", () => {

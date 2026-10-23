@@ -146,11 +146,14 @@ export function parseConversations(data: unknown, stats: CaiStats): ParsedSource
         return p && p !== ROOT_PARENT && texts.get(p) ? p : null;
       };
       for (const m of messages) {
-        const text = texts.get(str(m.uuid)!)!;
+        const uuid = str(m.uuid)!;
+        const text = texts.get(uuid)!;
         if (!text) continue;
+        // Never its own parent, directly or through a cycle of empty messages.
+        const parent = str(m.parent_message_uuid) === uuid ? null : nearestStored(str(m.parent_message_uuid));
         turns.push({
-          externalUuid: str(m.uuid)!,
-          parentUuid: nearestStored(str(m.parent_message_uuid)),
+          externalUuid: uuid,
+          parentUuid: parent === uuid ? null : parent,
           role: m.sender === "human" ? "user" : m.sender === "assistant" ? "assistant" : String(m.sender ?? "unknown"),
           ts: str(m.created_at),
           text,
@@ -224,17 +227,25 @@ export function parseDesignChat(data: unknown): ParsedSource | null {
   };
 }
 
-/** Visible text of an HTML artifact: scripts, styles and tags removed, entities for the common few decoded. */
+const BLOCK_TAG = /<\/?(?:p|div|br|hr|li|ul|ol|h[1-6]|tr|td|th|table|pre|section|article|header|footer|blockquote)\b[^>]*>/gi;
+const NAMED_ENTITIES: Record<string, string> = { nbsp: " ", lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" };
+
+/**
+ * Visible text of an HTML artifact, as a reader sees it: scripts and styles removed, block
+ * tags turned into line breaks, inline tags removed without a gap (so `DB_PASS<b></b>WORD`
+ * reads `DB_PASSWORD`), and named and numeric entities decoded. The export stores this text,
+ * not the HTML, so the scrubber sees what the markup would hide.
+ */
 export function htmlText(html: string): string {
   return html
     .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&")
+    .replace(BLOCK_TAG, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
+      if (code[0] !== "#") return NAMED_ENTITIES[code.toLowerCase()] ?? entity;
+      const n = code[1] === "x" || code[1] === "X" ? Number.parseInt(code.slice(2), 16) : Number.parseInt(code.slice(1), 10);
+      return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : entity;
+    })
     .replace(/[ \t]+/g, " ")
     .replace(/\s*\n\s*/g, "\n")
     .trim();
@@ -242,26 +253,29 @@ export function htmlText(html: string): string {
 
 /**
  * An artifact folder (`artifacts/<id>/`): its doc page, or the newest HTML version's text,
- * plus its comments. `versionHtml` maps each HTML version file name to its content.
+ * plus its comments. `versionText` maps each HTML version file name to its text (`htmlText`,
+ * applied when the export is stored).
  */
-export function parseArtifact(meta: unknown, page: string | null, versionHtml: Map<string, string>, comments: unknown): ParsedSource | null {
+export function parseArtifact(meta: unknown, page: string | null, versionText: Map<string, string>, comments: unknown): ParsedSource | null {
   if (!isObject(meta) || !str(meta.id)) return null;
   const versions = list(meta.versions).filter(isObject);
   const active = versions.find((v) => v.id === meta.active_version) ?? versions.at(-1);
   const turns: TurnRow[] = [];
   if (page?.trim()) {
     turns.push({ externalUuid: "page", parentUuid: null, role: "doc", ts: str(meta.updated_at), text: page, isSidechain: false });
-  } else if (versionHtml.size) {
+  } else if (versionText.size) {
     // Version files are named `<epoch>-<suffix>.html`: the highest epoch is the newest.
-    const newest = [...versionHtml.keys()].sort((a, b) => Number.parseInt(b, 10) - Number.parseInt(a, 10))[0]!;
-    const text = htmlText(versionHtml.get(newest)!);
+    const newest = [...versionText.keys()].sort((a, b) => Number.parseInt(b, 10) - Number.parseInt(a, 10))[0]!;
+    const text = versionText.get(newest)!.trim();
     if (text) turns.push({ externalUuid: `version/${newest}`, parentUuid: null, role: "doc", ts: str(meta.updated_at), text, isSidechain: false });
   }
   list(comments).forEach((thread, i) => {
     if (!isObject(thread)) return;
+    let previous: string | null = null; // the last comment of the thread that was kept
     list(thread.comments).forEach((c, j) => {
       if (isObject(c) && str(c.body)?.trim()) {
-        turns.push({ externalUuid: `comment/${i}/${j}`, parentUuid: j ? `comment/${i}/${j - 1}` : null, role: "comment", ts: str(c.created_at), text: str(c.body)!, isSidechain: false });
+        turns.push({ externalUuid: `comment/${i}/${j}`, parentUuid: previous, role: "comment", ts: str(c.created_at), text: str(c.body)!, isSidechain: false });
+        previous = `comment/${i}/${j}`;
       }
     });
   });

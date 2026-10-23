@@ -3,6 +3,7 @@
 
 import type Database from "better-sqlite3";
 import { type Config, isExcludedPath } from "./config.js";
+import { scrubText } from "./scrub.js";
 import type { EvidenceStore, RawFile } from "./evidence.js";
 import { CC_PARSER_VERSION, classifyClaudeCodePath, type ParseStats, parseMemory, parseSession } from "./parsers/claudeCode.js";
 
@@ -111,9 +112,13 @@ export function findSource(db: Database.Database, kind: SourceRow["kind"], exter
 /**
  * Upserts a source and makes its turns exactly `turns`, in one transaction. Only turns whose
  * content changed are written, so unchanged turns keep their ids, FTS rows and vectors; turns
- * no longer present (a parser change) are removed.
+ * no longer present (a parser change) are removed. Titles and turn text are scrubbed once
+ * more here: parsers derive text from stored copies (decoding, joining, stripping markup),
+ * which can assemble a secret the scrub of the stored copy could not see.
  */
 export function writeSource(db: Database.Database, source: SourceRow, turns: TurnRow[]): { turnsWritten: number; turnsRemoved: number } {
+  source = { ...source, title: source.title === null ? null : scrubText(source.title).value };
+  turns = turns.map((t) => ({ ...t, text: scrubText(t.text).value }));
   return db.transaction(() => {
     const { id: sourceId } = db
       .prepare(
