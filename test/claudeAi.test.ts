@@ -3,11 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strToU8, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ingestExportZip } from "../src/claudeAiExport.js";
+import { entryTimes, ingestExportZip } from "../src/claudeAiExport.js";
 import { openDb } from "../src/db.js";
 import { EvidenceStore } from "../src/evidence.js";
 import { migrate } from "../src/migrations.js";
-import { exportCategory, htmlText, isIngestedEntry, parseArtifact, parseConversations, parseMemories } from "../src/parsers/claudeAi.js";
+import { exportCategory, htmlText, isIngestedEntry, newestVersion, parseArtifact, parseConversations, parseMemories } from "../src/parsers/claudeAi.js";
 
 const ROOT = "00000000-0000-4000-8000-000000000000";
 const SECRET = "gh" + "p_" + "K".repeat(36);
@@ -66,14 +66,44 @@ describe("parser", () => {
     const comments = [{ comments: [{ body: "Fix the intro", created_at: "2026-10-21" }, { body: " ", created_at: "2026-10-21" }, { body: "Done", created_at: "2026-10-22" }] }];
     const fromHtml = parseArtifact(meta, null, html, comments);
     expect(fromHtml!.source).toMatchObject({ kind: "caa", external_id: "a1", title: "Report", created_at: "2026-10-20" });
-    expect(fromHtml!.turns.map((t) => [t.externalUuid, t.parentUuid, t.role, t.text])).toEqual([
-      ["version/1790000000-bbbb.html", null, "doc", "RGESN & report"],
-      ["comment/0/0", null, "comment", "Fix the intro"],
-      ["comment/0/2", "comment/0/0", "comment", "Done"], // the empty comment/0/1 is skipped
-    ]);
+    const rows = fromHtml!.turns.map((t) => [t.externalUuid, t.parentUuid, t.role, t.text]);
+    expect(rows.map((r) => r.slice(2))).toEqual([["doc", "RGESN & report"], ["comment", "Fix the intro"], ["comment", "Done"]]); // the empty comment is skipped
+    expect(rows[0]![0]).toBe("version/1790000000-bbbb.html");
+    expect(rows[2]![1]).toBe(rows[1]![0]);
+    // Comment ids do not depend on position: deleting the first one leaves the others' ids.
+    const later = parseArtifact(meta, null, html, [{ comments: comments[0]!.comments.slice(1) }])!.turns;
+    expect(later.filter((t) => t.role === "comment").map((t) => [t.externalUuid, t.parentUuid])).toEqual([[rows[2]![0], null]]);
+    const twice = parseArtifact(meta, null, new Map(), [{ comments: [{ body: "ok", created_at: "t" }, { body: "ok", created_at: "t" }] }])!.turns;
+    expect(new Set(twice.map((t) => t.externalUuid)).size).toBe(2);
     expect(parseArtifact(meta, "# Spec", html, [])!.turns.map((t) => t.text)).toEqual(["# Spec"]);
     expect(htmlText("<div>a</div>\n\n<div> b </div>")).toBe("a\nb");
     expect(htmlText("<p>DB_PASS<b></b>WORD&#61;x &#x3d; &quot;q&quot;</p>")).toBe('DB_PASSWORD=x = "q"');
+  });
+
+  it("reads HTML text like a browser: quoted '>' stays in its tag, a lone '<' is text, comments go", () => {
+    expect(htmlText('<div title="a>b">x</div>')).toBe("x");
+    expect(htmlText("<p>if a < b and c > d</p>")).toBe("if a < b and c > d");
+    expect(htmlText("a<!-- hidden -->b<!DOCTYPE html><?xml x?>c")).toBe("abc");
+    expect(htmlText("<SCRIPT type='x'>if (a<b) {}</script >after<style>p{}</style>")).toBe("after");
+    expect(htmlText("kept <b class=\"never closed")).toBe("kept");
+    expect(htmlText("kept <!-- never closed")).toBe("kept");
+    // Linear: inputs that make a backtracking regex quadratic.
+    const t0 = Date.now();
+    for (const bad of ["<a".repeat(200_000), "<!--".repeat(200_000), "a <".repeat(200_000), '<a "'.repeat(200_000), "<script>".repeat(100_000), "\r".repeat(200_000) + "x"]) htmlText(bad);
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+
+  it("picks the newest HTML version by its epoch, whatever the other names look like", () => {
+    expect(newestVersion(["9-a.html", "10-b.html"])).toBe("10-b.html");
+    expect(newestVersion(["v2-a.html", "1790-b.html", "x.html", "1789-c.html"])).toBe("1790-b.html");
+    expect(newestVersion(["b.html", "a.html"])).toBe("b.html");
+    expect(newestVersion([])).toBeUndefined();
+  });
+
+  it("dates claude.ai memory by the export, not by its newest file", () => {
+    const data = { account_uuid: "acct", conversations_memory: "x", memory_files: [{ path: "/a.md", content: "A", updated_at: "2026-10-01" }] };
+    expect(parseMemories(data, "2026-10-22T08:00:00.000Z")!.source.updated_at).toBe("2026-10-22T08:00:00.000Z");
+    expect(parseMemories(data)!.source.updated_at).toBe("2026-10-01");
   });
 
   it("sorts entries into categories and keeps only the ingested ones", () => {
@@ -140,7 +170,43 @@ describe("ingestExportZip", () => {
 
   it("leaves a ZIP that is not a claude.ai export alone", () => {
     expect(ingestExportZip(db, store, "/x/photos.zip", zip({ "IMG_1.txt": "hello" }))).toMatchObject({ isExport: false });
+    // Same file names as an export, other shapes: a ChatGPT export, a project with an artifacts/ folder.
+    const chatgpt = zip({ "conversations.json": JSON.stringify([{ title: "t", mapping: {} }]), "artifacts/x/artifact.json": '{"name": "build"}', "artifacts/x/page.md": "notes" });
+    expect(ingestExportZip(db, store, "/x/chatgpt.zip", chatgpt)).toMatchObject({ isExport: false, errors: [] });
+    expect(ingestExportZip(db, store, "/x/broken.zip", zip({ "conversations.json": "{ not json" }))).toMatchObject({ isExport: false, errors: [] });
     expect(storedOrigins()).toEqual([]);
+  });
+
+  it("takes a newer export of an artifact whose page is unchanged, for its new comments", () => {
+    const files = (comments: object[]) => zip({
+      "artifacts/a1/artifact.json": JSON.stringify({ id: "a1", active_version: "v1", updated_at: "2026-10-21", versions: [{ id: "v1", title: "Spec", created_at: "2026-10-21" }] }),
+      "artifacts/a1/page.md": "# Spec",
+      "artifacts/a1/comments.json": JSON.stringify(comments),
+    });
+    ingestExportZip(db, store, "/x/frames-1.zip", files([]));
+    expect(ingestExportZip(db, store, "/x/frames-2.zip", files([{ comments: [{ body: "Typo in 2.1", created_at: "2026-10-22" }] }]))).toMatchObject({ sources: { caa: { updated: 1 } }, turnsWritten: 1 });
+    expect(turnTexts()).toEqual(["# Spec", "Typo in 2.1"]);
+  });
+
+  it("takes a newer memory export even when its newest memory file was deleted", () => {
+    const memZip = (files: object[], mtime: Date) => Buffer.from(zipSync({ "memories/acct.json": [strToU8(JSON.stringify({ account_uuid: "acct", conversations_memory: "summary", memory_files: files })), { mtime }] }));
+    const first = memZip([{ path: "/a.md", content: "A", updated_at: "2026-10-01" }, { path: "/b.md", content: "B", updated_at: "2026-10-05" }], new Date(2026, 9, 6));
+    const second = memZip([{ path: "/a.md", content: "A", updated_at: "2026-10-01" }], new Date(2026, 9, 20));
+    expect([...entryTimes(second).keys()]).toEqual(["memories/acct.json"]);
+    ingestExportZip(db, store, "/x/memories-1.zip", first);
+    expect(ingestExportZip(db, store, "/x/memories-2.zip", second)).toMatchObject({ sources: { mem: { updated: 1 } }, turnsRemoved: 1 });
+    expect(ingestExportZip(db, store, "/x/memories-1.zip", first)).toMatchObject({ sources: { mem: { older: 1 } } });
+    expect(turnTexts()).toEqual(["summary", "A"]);
+  });
+
+  it("dates an export by the ZIP file's time when its entries carry the DOS zero date, as claude.ai's do", () => {
+    const memZip = (files: object[]) => Buffer.from(zipSync({ "memories/acct.json": [strToU8(JSON.stringify({ account_uuid: "acct", conversations_memory: "summary", memory_files: files })), { mtime: new Date(1980, 0, 1) }] }));
+    const first = memZip([{ path: "/a.md", content: "A", updated_at: "2026-10-01" }, { path: "/b.md", content: "B", updated_at: "2026-10-05" }]);
+    const second = memZip([{ path: "/a.md", content: "A", updated_at: "2026-10-01" }]);
+    expect(entryTimes(second).size).toBe(0);
+    ingestExportZip(db, store, "/x/memories-1.zip", first, new Date(), new Date("2026-10-06T00:00:00Z"));
+    expect(ingestExportZip(db, store, "/x/memories-2.zip", second, new Date(), new Date("2026-10-20T00:00:00Z"))).toMatchObject({ sources: { mem: { updated: 1 } }, turnsRemoved: 1 });
+    expect(ingestExportZip(db, store, "/x/memories-1.zip", first, new Date(), new Date("2026-10-06T00:00:00Z"))).toMatchObject({ sources: { mem: { older: 1 } } });
   });
 
   it("reports an entry it cannot read and ingests the rest", () => {

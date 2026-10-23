@@ -74,6 +74,13 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
         continue;
       }
       for (const path of walk(root, (p, err) => fail(fsError(p, err)))) {
+        // Nothing from an excluded project reaches the store, whatever the file (an export ZIP
+        // included): checked on every folder from the root down, and on the projects/ view,
+        // which names the project.
+        if (isExcludedPath(relative(root, path), config) || isExcludedPath(view(path), config)) {
+          excluded++;
+          continue;
+        }
         if (path.endsWith(".zip")) {
           let data: Buffer;
           try {
@@ -83,7 +90,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
             continue;
           }
           try {
-            const x = ingestExportZip(db, store, path, data);
+            const x = ingestExportZip(db, store, path, data, new Date(), statSync(path).mtime);
             if (!x.isExport) {
               skipped++;
               continue;
@@ -110,12 +117,6 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
         }
         if (!isScannable(path)) {
           skipped++;
-          continue;
-        }
-        // Nothing from an excluded project reaches the store, whatever the file: checked on
-        // every folder from the root down, and on the projects/ view, which names the project.
-        if (isExcludedPath(relative(root, path), config) || isExcludedPath(view(path), config)) {
-          excluded++;
           continue;
         }
         let data: Buffer;

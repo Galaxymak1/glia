@@ -3,9 +3,10 @@
 // Defensive like the Claude Code parser: unknown blocks are skipped and counted, never fatal;
 // the raw entry stays in the evidence store.
 
+import { createHash } from "node:crypto";
 import type { SourceRow, TurnRow } from "../sources.js";
 
-export const CAI_PARSER_VERSION = "cai@1";
+export const CAI_PARSER_VERSION = "cai@2";
 
 /** Categories found in an export, and whether they are ingested (owner decision, #5). */
 export const EXPORT_CATEGORIES = {
@@ -40,6 +41,36 @@ export function isIngestedEntry(entry: string): boolean {
   if (!category || !EXPORT_CATEGORIES[category]) return false;
   if (category !== "frames") return true;
   return /^artifacts\/[^/]+\/(artifact\.json|page\.md|comments\.json|versions\/[^/]+\.html)$/.test(entry);
+}
+
+/**
+ * Whether a parsed JSON entry has the shape claude.ai gives it, so a ZIP that only shares
+ * file names with an export (a ChatGPT export has a root `conversations.json` too) is not
+ * taken for one. Entries that fail are not stored.
+ */
+export function looksLikeExportJson(entry: string, data: unknown): boolean {
+  switch (exportCategory(entry)) {
+    case "conversations":
+      return Array.isArray(data) && data.length > 0 && data.every((c) => isObject(c) && !!str(c.uuid) && Array.isArray(c.chat_messages));
+    case "projects":
+      return isObject(data) && !!str(data.uuid) && ("docs" in data || "prompt_template" in data);
+    case "memories":
+      return isObject(data) && !!str(data.account_uuid) && ("conversations_memory" in data || "memory_files" in data);
+    case "design_chats":
+      return isObject(data) && !!str(data.uuid) && Array.isArray(data.messages);
+    case "frames":
+      if (entry.endsWith("/artifact.json")) return isObject(data) && !!str(data.id) && Array.isArray(data.versions);
+      if (entry.endsWith("/comments.json")) return Array.isArray(data) && data.every((t) => isObject(t) && Array.isArray(t.comments));
+      return false;
+    default:
+      return false;
+  }
+}
+
+/** The newest of an artifact's HTML version files, named `<epoch>-<suffix>.html`; unnumbered names come last. */
+export function newestVersion(names: Iterable<string>): string | undefined {
+  const epoch = (n: string) => (/^\d+(?=-)/.exec(n)?.[0] ?? "").padStart(20, "0");
+  return [...names].sort((a, b) => (epoch(a) === epoch(b) ? (a < b ? 1 : a > b ? -1 : 0) : epoch(a) < epoch(b) ? 1 : -1))[0];
 }
 
 export interface ParsedSource {
@@ -185,8 +216,12 @@ export function parseProject(data: unknown): ParsedSource | null {
   };
 }
 
-/** `memories/<account>.json`: claude.ai's conversation memory and its memory files. */
-export function parseMemories(data: unknown): ParsedSource | null {
+/**
+ * `memories/<account>.json`: claude.ai's conversation memory and its memory files. The file
+ * has no date of its own, and the newest memory file's date goes back when that file is
+ * deleted: the source is dated by `exportedAt`, the time the export wrote the entry, when known.
+ */
+export function parseMemories(data: unknown, exportedAt: string | null = null): ParsedSource | null {
   if (!isObject(data) || !str(data.account_uuid)) return null;
   const turns: TurnRow[] = [];
   const summary = str(data.conversations_memory);
@@ -199,7 +234,7 @@ export function parseMemories(data: unknown): ParsedSource | null {
   }
   times.sort();
   return {
-    source: { kind: "mem", external_id: `claude.ai/${str(data.account_uuid)}`, title: "claude.ai memory", project_hint: null, cwd: null, created_at: times[0] ?? null, updated_at: times.at(-1) ?? null },
+    source: { kind: "mem", external_id: `claude.ai/${str(data.account_uuid)}`, title: "claude.ai memory", project_hint: null, cwd: null, created_at: times[0] ?? null, updated_at: exportedAt ?? times.at(-1) ?? null },
     turns,
   };
 }
@@ -227,28 +262,83 @@ export function parseDesignChat(data: unknown): ParsedSource | null {
   };
 }
 
-const BLOCK_TAG = /<\/?(?:p|div|br|hr|li|ul|ol|h[1-6]|tr|td|th|table|pre|section|article|header|footer|blockquote)\b[^>]*>/gi;
+const BLOCK_TAGS = new Set(["p", "div", "br", "hr", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "td", "th", "table", "pre", "section", "article", "header", "footer", "blockquote"]);
 const NAMED_ENTITIES: Record<string, string> = { nbsp: " ", lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" };
 
+/** End of the tag opening at `start` (just past its `>`), skipping quoted attribute values; -1 if it never closes. */
+function tagEnd(html: string, start: number): number {
+  for (let i = start + 1; i < html.length; i++) {
+    const ch = html[i];
+    if (ch === ">") return i + 1;
+    if (ch === '"' || ch === "'") {
+      const close = html.indexOf(ch, i + 1);
+      if (close < 0) return -1;
+      i = close;
+    }
+  }
+  return -1;
+}
+
 /**
- * Visible text of an HTML artifact, as a reader sees it: scripts and styles removed, block
- * tags turned into line breaks, inline tags removed without a gap (so `DB_PASS<b></b>WORD`
- * reads `DB_PASSWORD`), and named and numeric entities decoded. The export stores this text,
- * not the HTML, so the scrubber sees what the markup would hide.
+ * Visible text of an HTML artifact, as a reader sees it: scripts, styles and comments removed,
+ * block tags turned into line breaks, inline tags removed without a gap (so `DB_PASS<b></b>WORD`
+ * reads `DB_PASSWORD`), and named and numeric entities decoded. A `<` that opens no tag stays
+ * text, and a `>` inside a quoted attribute does not end its tag. Like a browser, a tag or
+ * comment left open runs to the end. One pass, linear in the input. The export stores this
+ * text, not the HTML, so the scrubber sees what the markup would hide.
  */
 export function htmlText(html: string): string {
-  return html
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(BLOCK_TAG, "\n")
-    .replace(/<[^>]+>/g, "")
+  let out = "";
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0) {
+      out += html.slice(i);
+      break;
+    }
+    out += html.slice(i, lt);
+    const next = html[lt + 1] ?? "";
+    if (html.startsWith("<!--", lt)) {
+      const close = html.indexOf("-->", lt + 4);
+      i = close < 0 ? html.length : close + 3;
+      continue;
+    }
+    if (next === "!" || next === "?") {
+      // Doctype, CDATA, processing instruction: up to the next `>`.
+      const close = html.indexOf(">", lt);
+      i = close < 0 ? html.length : close + 1;
+      continue;
+    }
+    const name = /^\/?([a-zA-Z][a-zA-Z0-9-]*)/.exec(html.slice(lt + 1, lt + 40));
+    if (!name) {
+      out += "<"; // `a < b`: text
+      i = lt + 1;
+      continue;
+    }
+    const end = tagEnd(html, lt);
+    if (end < 0) break;
+    const tag = name[1]!.toLowerCase();
+    const closing = next === "/";
+    if (BLOCK_TAGS.has(tag)) out += "\n";
+    i = end;
+    if (!closing && (tag === "script" || tag === "style")) {
+      const close = new RegExp(`</${tag}\\s*>`, "gi");
+      close.lastIndex = end;
+      const m = close.exec(html);
+      i = m ? m.index + m[0].length : html.length;
+      out += " ";
+    }
+  }
+  return out
     .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
       if (code[0] !== "#") return NAMED_ENTITIES[code.toLowerCase()] ?? entity;
       const n = code[1] === "x" || code[1] === "X" ? Number.parseInt(code.slice(2), 16) : Number.parseInt(code.slice(1), 10);
       return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : entity;
     })
-    .replace(/[ \t]+/g, " ")
-    .replace(/\s*\n\s*/g, "\n")
-    .trim();
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 /**
@@ -264,21 +354,26 @@ export function parseArtifact(meta: unknown, page: string | null, versionText: M
   if (page?.trim()) {
     turns.push({ externalUuid: "page", parentUuid: null, role: "doc", ts: str(meta.updated_at), text: page, isSidechain: false });
   } else if (versionText.size) {
-    // Version files are named `<epoch>-<suffix>.html`: the highest epoch is the newest.
-    const newest = [...versionText.keys()].sort((a, b) => Number.parseInt(b, 10) - Number.parseInt(a, 10))[0]!;
+    const newest = newestVersion(versionText.keys())!;
     const text = versionText.get(newest)!.trim();
     if (text) turns.push({ externalUuid: `version/${newest}`, parentUuid: null, role: "doc", ts: str(meta.updated_at), text, isSidechain: false });
   }
-  list(comments).forEach((thread, i) => {
-    if (!isObject(thread)) return;
+  // Comments have no id in the export: each is keyed by its time and a hash of its text, so
+  // deleting or reordering one leaves the others' ids alone.
+  const seen = new Map<string, number>();
+  for (const thread of list(comments)) {
+    if (!isObject(thread)) continue;
     let previous: string | null = null; // the last comment of the thread that was kept
-    list(thread.comments).forEach((c, j) => {
-      if (isObject(c) && str(c.body)?.trim()) {
-        turns.push({ externalUuid: `comment/${i}/${j}`, parentUuid: previous, role: "comment", ts: str(c.created_at), text: str(c.body)!, isSidechain: false });
-        previous = `comment/${i}/${j}`;
-      }
-    });
-  });
+    for (const c of list(thread.comments)) {
+      if (!isObject(c) || !str(c.body)?.trim()) continue;
+      const key = `comment/${str(c.created_at) ?? ""}/${createHash("sha256").update(str(c.body)!).digest("hex").slice(0, 16)}`;
+      const n = (seen.get(key) ?? 0) + 1;
+      seen.set(key, n);
+      const id = n === 1 ? key : `${key}/${n}`;
+      turns.push({ externalUuid: id, parentUuid: previous, role: "comment", ts: str(c.created_at), text: str(c.body)!, isSidechain: false });
+      previous = id;
+    }
+  }
   const created = versions.map((v) => str(v.created_at)).filter((t): t is string => !!t).sort();
   return {
     source: { kind: "caa", external_id: str(meta.id)!, title: active ? str(active.title) : null, project_hint: null, cwd: null, created_at: created[0] ?? null, updated_at: str(meta.updated_at) },
