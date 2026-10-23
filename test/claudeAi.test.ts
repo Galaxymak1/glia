@@ -87,6 +87,8 @@ describe("parser", () => {
     expect(htmlText("<SCRIPT type='x'>if (a<b) {}</script >after<style>p{}</style>")).toBe("after");
     expect(htmlText("kept <b class=\"never closed")).toBe("kept");
     expect(htmlText("kept <!-- never closed")).toBe("kept");
+    expect(htmlText("<p title=don't>Hello</p> rest of page")).toBe("Hello\nrest of page");
+    expect(htmlText("<p class = 'a>b' data-x=\"it's\">x</p>")).toBe("x");
     // Linear: inputs that make a backtracking regex quadratic.
     const t0 = Date.now();
     for (const bad of ["<a".repeat(200_000), "<!--".repeat(200_000), "a <".repeat(200_000), '<a "'.repeat(200_000), "<script>".repeat(100_000), "\r".repeat(200_000) + "x"]) htmlText(bad);
@@ -144,6 +146,20 @@ describe("ingestExportZip", () => {
     expect(storedOrigins()).toEqual(["/x/conversations-000.zip!/conversations.json"]);
   });
 
+  it("keeps a conversations.json with one conversation it cannot read", () => {
+    const r = ingestExportZip(db, store, "/x/c.zip", zip({ "conversations.json": JSON.stringify([conversation(), { uuid: "odd", chat_messages: null }, "?"]) }));
+    expect(r).toMatchObject({ isExport: true, sources: { cai: { new: 2 } }, errors: [] });
+  });
+
+  it("an older export changes nothing, also after a parser change", () => {
+    ingestExportZip(db, store, "/x/new.zip", zip({ "conversations.json": JSON.stringify([conversation("2026-10-20T11:00:00Z")]) }));
+    db.prepare("UPDATE sources SET parser_version = 'cai@0'").run();
+    const older = conversation("2026-10-19T09:00:00Z");
+    older.chat_messages = older.chat_messages.slice(0, 1);
+    expect(ingestExportZip(db, store, "/x/old.zip", zip({ "conversations.json": JSON.stringify([older]) }))).toMatchObject({ sources: { cai: { older: 1 } }, turnsRemoved: 0 });
+    expect(turnTexts()).toHaveLength(5);
+  });
+
   it("is idempotent, and an older export changes nothing", () => {
     const newer = zip({ "conversations.json": JSON.stringify([conversation("2026-10-20T11:00:00Z")]) });
     ingestExportZip(db, store, "/x/new.zip", newer);
@@ -173,7 +189,10 @@ describe("ingestExportZip", () => {
     // Same file names as an export, other shapes: a ChatGPT export, a project with an artifacts/ folder.
     const chatgpt = zip({ "conversations.json": JSON.stringify([{ title: "t", mapping: {} }]), "artifacts/x/artifact.json": '{"name": "build"}', "artifacts/x/page.md": "notes" });
     expect(ingestExportZip(db, store, "/x/chatgpt.zip", chatgpt)).toMatchObject({ isExport: false, errors: [] });
-    expect(ingestExportZip(db, store, "/x/broken.zip", zip({ "conversations.json": "{ not json" }))).toMatchObject({ isExport: false, errors: [] });
+    // A damaged export is not taken for one, but never silently: its unreadable entry is reported.
+    const broken = ingestExportZip(db, store, "/x/broken.zip", zip({ "conversations.json": "{ not json" }));
+    expect(broken).toMatchObject({ isExport: false });
+    expect(broken.errors).toEqual(["/x/broken.zip!/conversations.json: not valid JSON, not stored"]);
     expect(storedOrigins()).toEqual([]);
   });
 

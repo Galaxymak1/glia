@@ -137,7 +137,8 @@ export function ingestExportZip(
 
   // File names alone do not make an export: a JSON entry is kept only with the shape claude.ai
   // gives it, and an artifact folder's files only with a recognised artifact.json. A ZIP with
-  // no recognised entry is left alone. Unreadable JSON in an export stays, so store.put reports it.
+  // no recognised entry is left alone. An entry named like an export's but not valid JSON is never
+  // stored, and always reported: it may be a damaged export.
   const shapes = new Map<string, "ok" | "unreadable" | "unrecognised">();
   const shape = (name: string) => {
     let r = shapes.get(name);
@@ -157,16 +158,21 @@ export function ingestExportZip(
     return name.endsWith(".json") ? shape(name) : "ok";
   };
   const verdicts = Object.keys(files).map((name) => [name, verdict(name)] as const);
+  for (const [name, v] of verdicts) {
+    if (v === "unreadable") result.errors.push(`${zipPath}!/${name}: not valid JSON, not stored`);
+  }
   if (!verdicts.some(([, v]) => v === "ok")) {
     // Still an export when it holds a category that is never ingested (account metadata):
     // nothing of it is stored either way, and it is reported as left out.
     const known = Object.keys(result.notIngested).some((c) => c in EXPORT_CATEGORIES && !EXPORT_CATEGORIES[c as ExportCategory]);
     if (!known) return { ...result, notIngested: {} };
-    if (verdicts.length) result.notIngested.unrecognised = verdicts.length;
+    const unrecognised = verdicts.filter(([, v]) => v === "unrecognised").length;
+    if (unrecognised) result.notIngested.unrecognised = unrecognised;
     result.isExport = true;
     return result;
   }
   for (const [name, v] of verdicts) {
+    if (v === "unreadable") delete files[name];
     if (v !== "unrecognised") continue;
     delete files[name];
     result.notIngested.unrecognised = (result.notIngested.unrecognised ?? 0) + 1;
@@ -245,7 +251,8 @@ export function ingestExportZip(
 /**
  * Writes one parsed source unless the stored one is as new: a source from another export
  * replaces it only when its `updated_at` is not earlier (conversations are upserted by uuid
- * and updated_at, SPEC.md), so re-importing an older export changes nothing. When `raw` is
+ * and updated_at, SPEC.md), so re-importing an older export changes nothing, also after a
+ * parser change: an older export lacks the newer turns, unlike a Claude Code transcript. When `raw` is
  * the source's only input (`rawIsWhole`), the same raw copy means nothing changed.
  */
 function indexSource(db: Database.Database, parsed: ParsedSource, raw: RawFile, rawIsWhole: boolean, result: ExportResult): SourceStatus {
@@ -253,7 +260,7 @@ function indexSource(db: Database.Database, parsed: ParsedSource, raw: RawFile, 
   const existing = findSource(db, source.kind, source.external_id);
   const sameParser = existing?.parser_version === CAI_PARSER_VERSION;
   if (existing && sameParser && rawIsWhole && existing.raw_sha256 === raw.sha256) return "unchanged";
-  if (existing && sameParser && (source.updated_at ?? "") < (existing.updated_at ?? "")) return "older";
+  if (existing && (source.updated_at ?? "") < (existing.updated_at ?? "")) return "older";
   const written = writeSource(db, { ...source, raw_path: raw.stored_path, raw_sha256: raw.sha256, parser_version: CAI_PARSER_VERSION }, parsed.turns);
   result.turnsWritten += written.turnsWritten;
   result.turnsRemoved += written.turnsRemoved;
