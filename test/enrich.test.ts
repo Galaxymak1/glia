@@ -46,3 +46,27 @@ describe("detectLang", () => {
     expect(detectLang('[tool_use Bash] {"command":"ls -la"}')).toBeNull();
   });
 });
+
+describe("cost on hostile input", () => {
+  // Turns can be megabytes of tool output: every step must stay linear.
+  const timed = (f: () => unknown) => {
+    const t = performance.now();
+    f();
+    return performance.now() - t;
+  };
+
+  it("handles a long token, unclosed tags and stray backticks in linear time", () => {
+    expect(timed(() => detectLang("a".repeat(5_000_000)))).toBeLessThan(2000);
+    expect(timed(() => detectLang("<pasted_content id=1> ".repeat(80_000)))).toBeLessThan(2000);
+    expect(timed(() => detectLang("x ` ".repeat(200_000) + "``` y ".repeat(200_000)))).toBeLessThan(2000);
+    expect(timed(() => splitInjected("<system-reminder> ".repeat(200_000)))).toBeLessThan(2000);
+  });
+
+  it("still finds spans after an opener of another tag that never closes", () => {
+    expect(splitInjected("<task-notification> open\nme <system-reminder>r</system-reminder>")).toEqual({
+      own: "<task-notification> open\nme",
+      injected: ["<system-reminder>r</system-reminder>"],
+    });
+  });
+});
+

@@ -72,14 +72,15 @@ Text the harness added, as opposed to text a person or Claude wrote, is kept and
 | --- | --- |
 | Claude Code `attachment` line of type `hook_additional_context` | Stored as its own turn (role `user`), flagged, in the thread between the prompt and the reply. Other attachment types (environment, tool lists, file snapshots, `hook_success` stdout, which duplicates the context) stay skipped. |
 | Claude Code user line with `isMeta` or `isCompactSummary` | The whole turn is flagged: skill bodies, image notes, messages relayed from other agents, compaction summaries. |
-| Tagged spans in a user or tool turn: `<system-reminder>`, `<task-notification>`, `<local-command-caveat>`, `<local-command-stdout>`, `<local-command-stderr>`, `<user-prompt-submit-hook>` | Split out. The person's words stay in the turn, unflagged. The spans go to a child turn `<uuid>#injected`, flagged. A turn that is nothing but spans is flagged whole. A tag left open is not a span. |
+| Tagged spans in a user or tool turn: `<system-reminder>`, `<task-notification>`, `<local-command-caveat>`, `<local-command-stdout>`, `<local-command-stderr>`, `<user-prompt-submit-hook>`, `<ide_opened_file>`, `<ide_selection>` | Split out. The person's words stay in the turn, unflagged. The spans go to a child turn `<uuid>#injected`, flagged. A turn that is nothing but spans is flagged whole. A tag left open is not a span. Spans are found with indexOf, so the cost stays linear even with thousands of unclosed tags. |
 | claude.ai `injected_prompt_block` (memory snapshots, date notes, reminders), and the same tagged spans in human text | Same split: a child turn `<uuid>#injected`. A message that is only injected context is stored whole, flagged. |
 
 Assistant text is never split: when Claude writes `<system-reminder>`, it is talking about the tag.
 
 ### Language (`lang`: `fr`, `en`, `mixed`, or null)
 
-- Before counting, the detector ignores fenced and inline code, URLs, paths, `[tool_use …]` lines, `<pasted_content>` blocks and attached files.
+- The detector reads only the first 64 KB of a turn, with linear steps only (a multi-megabyte tool result cannot stall ingest).
+- Before counting, it ignores fenced and inline code, URLs, paths, `[tool_use …]` lines, `<pasted_content>` blocks and attached files.
 - The rest is split into sentences. Each sentence counts French and English function words from two lists that share no word (`le`, `est`, `pour`… against `the`, `is`, `with`…). Words like `a`, `on` or `me`, which exist in both languages, are in neither list.
 - Each sentence goes to the language it has more words of.
 - Fewer than 2 function words in the whole turn gives null (too short or too technical to call).
@@ -91,16 +92,16 @@ Assistant text is never split: when Claude writes `<system-reminder>`, it is tal
 
 ### Measured on the real data (2026-10-24)
 
-- 9,986 turns.
-- 338 flagged as injected: 264 Claude Code user turns, 5 tool turns, 69 claude.ai turns.
+- 10,058 turns.
+- 341 flagged as injected: 266 Claude Code user turns, 6 tool turns, 69 claude.ai turns.
 - Language:
 
   | `lang` | Turns |
   | --- | --- |
-  | `en` | 4,943 |
-  | `fr` | 882 |
-  | `mixed` | 299 |
-  | null | 3,862 (mostly tool output) |
+  | `en` | 4,967 |
+  | `fr` | 891 |
+  | `mixed` | 297 |
+  | null | 3,903 (mostly tool output) |
 
 - Hand check of 50 sampled turns (20 flagged, 30 unflagged user and tool turns): no wrong flag.
 - The second ingest writes 0 turns, and no turn points to a missing parent.
