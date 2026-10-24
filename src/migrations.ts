@@ -181,6 +181,20 @@ export const migrations: Migration[] = [
       DROP TABLE turns_vec;
     `,
   },
+  {
+    version: 5,
+    name: "session opt-outs",
+    sql: `
+      -- Claude Code sessions the user opted out of by typing #nobrain (#22). Nothing of them is
+      -- stored; this row is the audit trail of the purge and names the session, never its content.
+      CREATE TABLE opt_outs (
+        session_id       TEXT    PRIMARY KEY,
+        opted_out_at     TEXT    NOT NULL,
+        sources_purged   INTEGER NOT NULL,
+        raw_files_purged INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {
