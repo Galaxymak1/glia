@@ -30,6 +30,8 @@ flowchart LR
 
 - **Scrub before storing.** Every file is scrubbed before it touches disk (`src/scrub.ts`, version `scrub@1`). Rules find keys and tokens by shape (Anthropic, OpenAI, GitHub, AWS, Slack, Stripe, Google, JWT, PEM private keys), credentials in URLs, auth headers, passwords on command lines, and secrets assigned to names like `password` or `api_key` in `.env` and code. A match becomes `[REDACTED:<kind>]`. JSON is scrubbed in place on its raw text, so the file stays valid JSON. A JSONL line cut off mid-write is replaced by a marker line.
 - **Content-addressed.** The scrubbed copy is gzipped to `raw/<ab>/<sha256>.gz`, keyed by the SHA-256 of the *original* bytes (`raw_files` table). Storing the same bytes twice does nothing. A missing or damaged copy is rewritten.
+- **Every origin.** `raw_file_origins` records each path a raw file was read from, not only the first one.
+- **Superseded copies are pruned (#20, `src/prune.ts`).** A growing transcript is stored again in full each time it changes. After each ingest, an older copy of a Claude Code transcript is pruned when every complete line of it opens the copy its source was parsed from. A last line cut off mid-write is left out of that check. The file is deleted and the row kept with `pruned_at`, so the same bytes met again are neither stored nor parsed. The copy a source points to is never pruned. A rewritten copy, or one scrubbed under other rules, is kept and counted. Memory files keep every version. `.tmp` files older than an hour, left by a killed ingest, are removed at the start of ingest.
 - **Owner-only.** The database is chmod 600 and its folder 700.
 - **Exclusion.** Claude Code project folders matching `claudeCode.exclude` in the config are never stored or parsed. The check fails closed: any folder of the path that matches excludes the file, and that includes an export ZIP found inside one.
 
@@ -169,8 +171,7 @@ When Ollama cannot be reached, search returns the keyword results and says so. I
 
 ## Known gaps
 
-- Pruning superseded transcript copies, and clean-up of `.tmp` files (#20).
-- Opt-out purge finds a raw copy by its first recorded origin. A file of the session folder whose identical bytes were first seen elsewhere is not purged (second origins are not recorded, #20).
+- A pruned copy is recognised by its bytes. A byte-identical file at another session's path is skipped too; real transcripts carry their session id in every line, so this is not expected. Copies kept as not superseded are compared again on every ingest.
 - The opt-out marker is read in Claude Code sessions only. A claude.ai conversation cannot opt out yet (no marker is read in exports).
 - Files nested inside artifact bundles are not ingested (15 entries in the current export).
 - `queued_command` attachments (a prompt typed while Claude was busy) are skipped. Most of them also appear later as a user line, but not all of them.
@@ -192,4 +193,5 @@ When Ollama cannot be reached, search returns the keyword results and says so. I
 | WP6 turn enrichment | #24 | `enrich@1`: injected flags and split-off `#injected` turns, hook context stored, per-turn language. |
 | WP7 hybrid index | #25 | Schema v4 (`chunks`, `chunks_vec`; `turns_vec` dropped). Chunks with context headers, BGE-M3 Q8_0 via Ollama, incremental `brain index`, `brain search` with RRF k = 60. |
 | WP8 local MCP | #26 | `brain mcp` over stdio: `search_evidence` (kind and date filters in both indexes) and `open_evidence` (tree walk, size caps). |
-| Session opt-out | this PR | Schema v5 (`opt_outs`). `#nobrain` alone on a line of a user message: the session and its folder are never stored, and earlier copies are purged. |
+| Session opt-out | #28 | Schema v5 (`opt_outs`). `#nobrain` alone on a line of a user message: the session and its folder are never stored, and earlier copies are purged. |
+| Pruning | this PR | Schema v6 (`raw_files.pruned_at`, `raw_file_origins`). Superseded transcript copies pruned after ingest, stale `.tmp` files removed, opt-out purge matches every origin. |

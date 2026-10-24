@@ -10,6 +10,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createMcpServer } from "./mcp.js";
 import { buildIndex, indexStatus } from "./vectors.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
+import { pruneSuperseded, removeStaleTmp } from "./prune.js";
 import { isOptedOut, OPT_OUT_MARKER, OptOutCheck, optOut, sessionOf } from "./optOut.js";
 import { isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
 import { indexClaudeCodeFile } from "./sources.js";
@@ -26,7 +27,8 @@ Commands:
   ingest <path...>              Scrub and store raw files, then parse Claude Code transcripts and
                                 memory, and claude.ai export ZIPs, into sources and turns (idempotent).
                                 A session with a line holding only #nobrain, typed by the user, is
-                                never stored, nor its folder; earlier copies are purged
+                                never stored, nor its folder; earlier copies are purged. Older
+                                copies of a transcript that a newer copy holds in full are pruned
   index [--rebuild]             Embed new and changed turns into the meaning index (Ollama); --rebuild
                                 deletes the index and embeds everything again
   search <query...>             Hybrid keyword + meaning search over turns
@@ -65,6 +67,8 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
     const store = new EvidenceStore(db, rawDirFor(dbPath));
     let created = 0, repaired = 0, unchanged = 0, skipped = 0, symlinks = 0, excluded = 0, failed = 0, bytes = 0, storedBytes = 0, redactions = 0;
     const parsed = { session: 0, subagent: 0, memory: 0 };
+    const staleTmp = removeStaleTmp(rawDirFor(dbPath));
+    let superseded = 0;
     const optOutCheck = new OptOutCheck(db);
     const optedOut = new Set<string>();
     const purged = { sources: 0, rawFiles: 0 };
@@ -166,6 +170,11 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
         }
         try {
           const r = store.put(path, data);
+          // A copy pruned as superseded: a newer one was parsed already.
+          if (r.pruned) {
+            superseded++;
+            continue;
+          }
           if (r.created) {
             created++;
             bytes += r.file.bytes;
@@ -188,6 +197,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
         }
       }
     }
+    const prune = pruneSuperseded(db, store);
     const mb = (n: number) => (n / 1e6).toFixed(1);
     console.log(
       `Stored ${created} new files (${mb(bytes)} MB, ${mb(storedBytes)} MB compressed, ${redactions} secrets redacted); ` +
@@ -218,6 +228,14 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
       console.log(
         `${optedOut.size} sessions opted out (${OPT_OUT_MARKER}): ${optedOutFiles} files not stored` +
           (purged.sources || purged.rawFiles ? `; purged ${purged.sources} sources and ${purged.rawFiles} raw files stored earlier` : ""),
+      );
+    }
+    if (prune.pruned || prune.kept || superseded || staleTmp) {
+      console.log(
+        `Pruned ${prune.pruned} superseded transcript copies (${mb(prune.bytesFreed)} MB compressed)` +
+          (prune.kept ? `; kept ${prune.kept} older copies the current one does not hold in full` : "") +
+          (superseded ? `; ${superseded} already-pruned copies met again` : "") +
+          (staleTmp ? `; removed ${staleTmp} stale temp files` : ""),
       );
     }
     const types = Object.entries(skippedTypes).sort((a, b) => b[1] - a[1]);
