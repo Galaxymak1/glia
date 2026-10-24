@@ -3,7 +3,10 @@ import { parseArgs } from "node:util";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
-import { type Config, isExcludedPath, loadConfig } from "./config.js";
+import { type Config, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
+import { OllamaEmbedder } from "./embed.js";
+import { search } from "./search.js";
+import { buildIndex, indexStatus } from "./vectors.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
 import { isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
 import { indexClaudeCodeFile } from "./sources.js";
@@ -19,13 +22,20 @@ Commands:
   scrub --dry-run [path...]     Report the secrets scrubbing would remove (default: ~/.claude/projects)
   ingest <path...>              Scrub and store raw files, then parse Claude Code transcripts and
                                 memory, and claude.ai export ZIPs, into sources and turns (idempotent)
+  index [--rebuild]             Embed new and changed turns into the meaning index (Ollama); --rebuild
+                                deletes the index and embeds everything again
+  search <query...>             Hybrid keyword + meaning search over turns
 
 Options:
   --db <path>   Database file (default: $BRAIN_DB, else ~/.local/share/ai_second_brain/brain.db)
   --show        With scrub: list each finding with its file, line and a masked preview
+  --limit <n>   With search: number of results (default 10)
+  --injected    With search: include text the harness injected (reminders, hook context)
+  --json        With search: print the results as JSON
 
 Config: $BRAIN_CONFIG, else ~/.config/ai_second_brain/config.json
   {"claudeCode": {"exclude": ["-home-me-work-*"]}}   project folders never stored or parsed
+  {"embedding": {"url": "http://localhost:11434", "model": "hf.co/gpustack/bge-m3-GGUF:Q8_0"}}
   -h, --help    Show this help`;
 
 function init(dbPath: string): void {
@@ -188,7 +198,64 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
   }
 }
 
-function main(argv: string[]): number {
+async function index(dbPath: string, config: Config, rebuild: boolean): Promise<number> {
+  const db = openDb(dbPath);
+  try {
+    migrate(db);
+    const { url, model } = embeddingSettings(config);
+    const embedder = new OllamaEmbedder(model, url);
+    const started = Date.now();
+    let last = 0;
+    const report = await buildIndex(db, embedder, {
+      rebuild,
+      onProgress: (done, total) => {
+        if (Date.now() - last < 10_000 && done < total) return;
+        last = Date.now();
+        const secs = (Date.now() - started) / 1000;
+        const eta = done ? Math.round(((total - done) * secs) / done / 60) : 0;
+        console.error(`brain: embedded ${done}/${total} chunks (${Math.round(embedder.tokens / secs)} tokens/s, about ${eta} min left)`);
+      },
+    });
+    const secs = (Date.now() - started) / 1000;
+    console.log(
+      `Embedded ${report.chunksEmbedded} chunks of ${report.turnsEmbedded} turns with ${model} ` +
+        `(${embedder.tokens} tokens, ${secs.toFixed(0)} s); ${report.turnsUnchanged} turns up to date; ` +
+        `${report.turnsCleared} cleared; ${report.turns} turns in all`,
+    );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function searchCommand(dbPath: string, config: Config, query: string, limit: number, includeInjected: boolean, json: boolean): Promise<number> {
+  const db = openDb(dbPath);
+  try {
+    migrate(db);
+    const { url, model } = embeddingSettings(config);
+    const result = await search(db, new OllamaEmbedder(model, url, 30_000), query, { limit, includeInjected });
+    if (result.meaningError) console.error(`brain: meaning search unavailable (${result.meaningError}); keyword results only`);
+    const status = indexStatus(db, model);
+    if (status.missing) console.error(`brain: ${status.missing} turns are not in the meaning index yet; run: brain index`);
+    if (status.otherModel) console.error(`brain: ${status.otherModel} chunks were embedded with another model and are ignored; run: brain index`);
+    if (json) {
+      console.log(JSON.stringify(result.hits, null, 2));
+      return 0;
+    }
+    if (!result.hits.length) console.log("No results.");
+    result.hits.forEach((h, i) => {
+      const ranks = [h.keywordRank && `keyword #${h.keywordRank}`, h.meaningRank && `meaning #${h.meaningRank}`].filter(Boolean).join(", ");
+      const when = h.ts ? ` · ${h.ts.slice(0, 16).replace("T", " ")}` : "";
+      console.log(`${i + 1}. [${h.kind}] ${h.sourceTitle ?? "(untitled)"}${when} · ${h.role}${h.isInjected ? " (injected)" : ""} · turn ${h.turnId} · ${ranks}`);
+      console.log(`   ${h.snippet}`);
+    });
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -196,6 +263,10 @@ function main(argv: string[]): number {
       db: { type: "string" },
       "dry-run": { type: "boolean" },
       show: { type: "boolean" },
+      rebuild: { type: "boolean" },
+      limit: { type: "string" },
+      injected: { type: "boolean" },
+      json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -225,15 +296,28 @@ function main(argv: string[]): number {
         return 1;
       }
       return ingest(values.db ?? defaultDbPath(), args, loadConfig());
+    case "index":
+      return index(values.db ?? defaultDbPath(), loadConfig(), values.rebuild ?? false);
+    case "search": {
+      const limit = Number(values.limit ?? 10);
+      if (!args.length || !Number.isInteger(limit) || limit < 1) {
+        console.error(`brain search needs a query, and --limit a positive whole number.\n\n${USAGE}`);
+        return 1;
+      }
+      return searchCommand(values.db ?? defaultDbPath(), loadConfig(), args.join(" "), limit, values.injected ?? false, values.json ?? false);
+    }
     default:
       console.error(`Unknown command: ${command}\n\n${USAGE}`);
       return 1;
   }
 }
 
-try {
-  process.exitCode = main(process.argv.slice(2));
-} catch (err) {
-  console.error(`brain: ${err instanceof Error ? err.message : String(err)}`);
-  process.exitCode = 1;
-}
+main(process.argv.slice(2)).then(
+  (code) => {
+    process.exitCode = code;
+  },
+  (err) => {
+    console.error(`brain: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  },
+);

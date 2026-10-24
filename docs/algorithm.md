@@ -1,6 +1,6 @@
 # How the brain works
 
-A living description of the algorithm, updated by every work package that changes it. `SPEC.md` says what the brain should do; this file says what the code does today. Last updated by WP6 (#6).
+A living description of the algorithm, updated by every work package that changes it. `SPEC.md` says what the brain should do; this file says what the code does today. Last updated by WP7 (#7).
 
 ## Pipeline
 
@@ -13,10 +13,18 @@ flowchart LR
   E --> P["parse<br/>cc@3 · cai@3"]
   P --> N["enrich<br/>injected flag · language"]
   N --> T[("SQLite: sources, turns<br/>FTS5 by trigger")]
-  T -.-> V["WP7: embeddings + hybrid search"]
+  T --> C["chunk + header<br/>~512 tokens"]
+  C --> O["BGE-M3 Q8_0<br/>(Ollama)"]
+  O --> V[("chunks, chunks_vec")]
+  Q["brain search"] --> F["FTS5 bm25<br/>top 50 turns"]
+  Q --> K["query vector, KNN<br/>top 50 turns by best chunk"]
+  T -.-> F
+  V -.-> K
+  F --> R["RRF k = 60"]
+  K --> R
 ```
 
-`brain ingest <path...>` runs the whole chain. Every step can be re-run: same input, same database.
+`brain ingest <path...>` runs the chain up to the turns; `brain index` embeds what is new or changed; `brain search <query>` reads both indexes. Every step can be re-run: same input, same database.
 
 ## 1. Evidence store and scrubbing (WP2, WP3)
 
@@ -57,10 +65,10 @@ Parsers are pure functions: stored text in, one `sources` row and its `turns` ou
 Shared by every parser, in one transaction per source:
 1. Scrub the title, project hint and each turn's text once more. Parsers join and decode text, which can put back together a secret that no single piece contained.
 2. Detect each turn's language (section 4).
-3. Upsert the source, then upsert each turn by `(source, external_uuid)`. A turn is written only if something changed, so unchanged turns keep their id, FTS row and (later) vector.
+3. Upsert the source, then upsert each turn by `(source, external_uuid)`. A turn is written only if something changed, so unchanged turns keep their id, FTS row and vectors.
 4. Delete turns the new parse no longer has.
 
-FTS5 (`unicode61 remove_diacritics 2`) is kept in sync by triggers. A deleted turn takes its FTS row and vector with it.
+FTS5 (`unicode61 remove_diacritics 2`) is kept in sync by triggers. A deleted turn takes its FTS row, chunks and vectors with it.
 
 ## 4. Enrichment (WP6, `src/enrich.ts`)
 
@@ -106,9 +114,44 @@ Assistant text is never split: when Claude writes `<system-reminder>`, it is tal
 - Hand check of 50 sampled turns (20 flagged, 30 unflagged user and tool turns): no wrong flag.
 - The second ingest writes 0 turns, and no turn points to a missing parent.
 
-## 5. Search (WP7, next)
+## 5. Meaning index (WP7, `src/chunk.ts`, `src/vectors.ts`, `src/embed.ts`)
 
-Planned per `SPEC.md` and #7: FTS5 ranking plus BGE-M3 embeddings (1024 dims, in `turns_vec`, with the model and dims stored per row), fused by reciprocal rank fusion with k = 60. Injected turns will be searchable but kept out of default results. The choice of where embeddings run comes from #15.
+### What is embedded
+
+| Turn | Embedded |
+| --- | --- |
+| user, assistant, doc, memory, comment | every chunk |
+| tool output (about a quarter of all text: file contents, logs) | the first chunk only |
+| `is_injected` | nothing: keyword search only |
+| empty, or in an excluded source | nothing |
+
+Before chunking, each `[tool_use <name>] <json>` line in a turn is cut to its first 300 characters: past the name and the first arguments, a written file or a diff says what was written, not what was meant. Keyword search still has the full line.
+
+### Chunks
+
+- **Size:** at most 1,400 characters, about 512 BGE-M3 tokens (the stored turns average 2.75 characters per token). Most turns are a single chunk.
+- **Cut:** at the last paragraph break in the second half of the window, else the last line break, sentence end or space, else at the limit (never inside a surrogate pair). Each search stays inside the window, so chunking is linear: 2 MB without a single break takes about 60 ms.
+- **Overlap:** the next chunk starts about 180 characters (64 tokens) before the cut, at a word start.
+- **Context header:** before each chunk, the source title and `> ` plus the first line of the turn it answers, each cut to 150 characters. The turn it answers is the nearest ancestor a person or Claude wrote: tool output and injected turns are passed over. "yes, do that" is found by the question before it.
+- **Not stored.** A chunk's text is cut again from its turn when needed. `chunks` holds `turn_id`, `ord` and `input_sha256`, the hash of the exact text embedded, header included.
+
+### Vectors
+
+- **Model:** BGE-M3 quantised to Q8_0 (`hf.co/gpustack/bge-m3-GGUF:Q8_0`, 634 MB), through Ollama. On sample turns its vectors have cosine 0.9993 to 0.9995 against F16. The laptop and the server must run this same file. Set by `embedding.model` and `embedding.url` in the config.
+- **No silent truncation.** Ollama cuts every input to 2,048 tokens unless `num_ctx` and `num_batch` are raised, and says nothing. Requests set both to 8,192 and pass `truncate: false`, so a too-long input is an error (HTTP 413), never a cut vector.
+- **Storage:** `chunks_vec` (sqlite-vec `vec0`, 1024 dims, cosine distance), with `model` and `dims` on every row. Deleting a chunk deletes its vector by trigger; deleting a turn deletes its chunks by foreign key.
+- **Incremental.** `brain index` hashes every turn's inputs and embeds only the turns whose hashes changed or whose vectors come from another model. A changed title therefore re-embeds the turns of its source. Turns that no longer have chunks (now injected, or emptied) lose them. Each turn is written in its own transaction once all its chunks are embedded, so an interrupted run keeps every turn it finished.
+- **Rebuild:** `brain index --rebuild` deletes every chunk and vector, then embeds everything again. Chunking is deterministic, so the inputs, and the results, are the same.
+
+## 6. Search (WP7, `src/search.ts`)
+
+1. **Keyword:** every word of the query, quoted, joined by OR, matched in `turns_fts` and ranked by bm25. The top 50 turns.
+2. **Meaning:** the query is embedded as it is (BGE-M3 takes no query prefix). The 200 nearest chunks with the current model's vectors are grouped by turn, and a turn takes the rank of its best chunk. The top 50 turns.
+3. **Fusion:** reciprocal rank fusion, `score = Σ 1 / (60 + rank)` over both lists. Ties go to the better keyword rank, then to the older turn, so the same query always gives the same order.
+4. **Filters:** turns of excluded sources never appear. Injected turns are left out unless `--injected` is given.
+5. **Snippet:** the FTS5 snippet when the turn matched by keyword, else the start of its best chunk.
+
+When Ollama cannot be reached, search returns the keyword results and says so. It also warns when turns are not yet in the meaning index, or when chunks were embedded with another model, which search ignores.
 
 ## Known gaps
 
@@ -117,6 +160,8 @@ Planned per `SPEC.md` and #7: FTS5 ranking plus BGE-M3 embeddings (1024 dims, in
 - Files nested inside artifact bundles are not ingested (15 entries in the current export).
 - `queued_command` attachments (a prompt typed while Claude was busy) are skipped. Most of them also appear later as a user line, but not all of them.
 - Code pasted without fences can come out as `mixed`.
+- The keyword query is an OR of every word, function words included. bm25 weighs common words down, but a query made only of them matches almost everything.
+- Chunk size, the context header and tool-output handling are first guesses, to be tuned on the evaluation set (#9, #10).
 
 ## Changelog
 
@@ -127,4 +172,5 @@ Planned per `SPEC.md` and #7: FTS5 ranking plus BGE-M3 embeddings (1024 dims, in
 | WP2 evidence store | #18 | Content-addressed scrubbed gzip store, `raw_files`, `brain ingest`. |
 | WP4 Claude Code parser | #21 | `cc@2`: turns, nearest stored parent, fail-closed exclusion, older-copy rule. |
 | WP5 claude.ai export | #23 | `cai@2`: five kinds, all branches, structure-based recognition, HTML as text, final scrub in `writeSource`. |
-| WP6 turn enrichment | this PR | `enrich@1`: injected flags and split-off `#injected` turns, hook context stored, per-turn language. |
+| WP6 turn enrichment | #24 | `enrich@1`: injected flags and split-off `#injected` turns, hook context stored, per-turn language. |
+| WP7 hybrid index | this PR | Schema v4 (`chunks`, `chunks_vec`; `turns_vec` dropped). Chunks with context headers, BGE-M3 Q8_0 via Ollama, incremental `brain index`, `brain search` with RRF k = 60. |

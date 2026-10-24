@@ -148,6 +148,39 @@ export const migrations: Migration[] = [
       ALTER TABLE sources_v3 RENAME TO sources;
     `,
   },
+  {
+    version: 4,
+    name: "chunk vectors",
+    sql: `
+      -- The meaning index embeds chunks of about 512 tokens, not whole turns (#7): a turn
+      -- scores as its best chunk. A chunk's text is not stored; it is cut again from its turn
+      -- (src/chunk.ts, deterministic). input_sha256 is the hash of the exact text embedded,
+      -- header included, so a changed turn, title or chunking rule means a re-embed.
+      CREATE TABLE chunks (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        turn_id      INTEGER NOT NULL REFERENCES turns (id) ON DELETE CASCADE,
+        ord          INTEGER NOT NULL,
+        input_sha256 TEXT    NOT NULL,
+        UNIQUE (turn_id, ord)
+      );
+
+      -- Bind chunk_id and dims as BigInt (see turns_vec in v1). BGE-M3 vectors are
+      -- normalised; cosine distance ranks them as the model was trained to be compared.
+      CREATE VIRTUAL TABLE chunks_vec USING vec0 (
+        chunk_id  INTEGER PRIMARY KEY,
+        embedding FLOAT[${EMBEDDING_DIMS}] distance_metric=cosine,
+        model     TEXT,
+        dims      INTEGER
+      );
+      CREATE TRIGGER chunks_vec_ad AFTER DELETE ON chunks BEGIN
+        DELETE FROM chunks_vec WHERE chunk_id = old.id;
+      END;
+
+      -- Never written: vectors per turn were replaced by vectors per chunk before any shipped.
+      DROP TRIGGER turns_vec_ad;
+      DROP TABLE turns_vec;
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {
