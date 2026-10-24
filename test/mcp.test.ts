@@ -134,7 +134,7 @@ describe("open_evidence", () => {
   it("cuts long turns and keeps the whole result under the cap", async () => {
     const big = "x".repeat(200_000);
     const chain = Array.from({ length: 41 }, (_, i) => turn(`b${i}`, i ? `b${i - 1}` : null, i % 2 ? "assistant" : "user", big, `2026-10-02T10:00:${String(i).padStart(2, "0")}Z`));
-    source("cc", "big", "Big session", chain);
+    source("cc", "big", "T".repeat(5_000), chain);
     const r = openEvidence(db, idOf("b20"), 20)!;
     const cited = r.turns.find((t) => t.cited)!;
     expect(cited.truncated).toBe(true);
@@ -148,5 +148,14 @@ describe("open_evidence", () => {
     const { text } = await call("open_evidence", { id: idOf("b20"), window: 20 });
     expect(text.length).toBeLessThanOrEqual(RESULT_CHARS);
     expect(text).toContain("left out to stay under the size cap");
+    // No gap: the kept turns are one unbroken stretch of the chain.
+    const n = ids.map((id) => chain.findIndex((t) => idOf(t.externalUuid) === id));
+    expect(n).toEqual(n.map((_, i) => n[0]! + i));
+  });
+
+  it("cuts long source titles in search results", async () => {
+    source("cai", "long", "kubernetes ".repeat(500), [turn("l1", null, "user", "kubernetes title test", "2026-10-03T10:00:00Z")]);
+    const { text } = await call("search_evidence", { query: "kubernetes title test" });
+    expect(text.split("\n").every((line) => line.length < 300)).toBe(true);
   });
 });

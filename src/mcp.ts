@@ -20,7 +20,8 @@ export const NEIGHBOUR_CHARS = 2_000;
  */
 export const RESULT_CHARS = 50_000;
 
-/** Room kept for the source line and for each turn's header line. */
+/** Room kept for the source line (titles are cut at TITLE_CHARS) and the closing note, and for each turn's header line. */
+const TITLE_CHARS = 300;
 const SOURCE_HEADER_CHARS = 1_000;
 const TURN_HEADER_CHARS = 200;
 
@@ -79,18 +80,22 @@ export function openEvidence(db: Database.Database, id: number, window = 6) {
 
   const show = (t: TurnRow, max: number) => ({ id: t.id, role: t.role, ts: t.ts, isInjected: t.is_injected === 1, cited: t.id === cited.id, ...cut(t.text, max) });
   // The neighbours nearest the cited turn are kept first when the result would pass the cap.
-  let budget = RESULT_CHARS - SOURCE_HEADER_CHARS;
+  // Room is kept for the source line, every turn's header line and the closing note.
+  let budget = RESULT_CHARS - SOURCE_HEADER_CHARS - TURN_HEADER_CHARS;
   const main = show(cited, Math.min(TURN_CHARS, budget));
   budget -= main.text.length;
   const keptBefore: ReturnType<typeof show>[] = [];
   const keptAfter: ReturnType<typeof show>[] = [];
+  // Once a side has no room, the turns past it are left out too, so no gap opens in the middle.
+  const full = { before: false, after: false };
   let omitted = 0;
   for (let i = 0; i < Math.max(before.length, after.length); i++) {
     for (const side of ["after", "before"] as const) {
       const t = side === "after" ? after[i] : before[before.length - 1 - i];
       if (!t) continue;
       const s = show(t, NEIGHBOUR_CHARS);
-      if (s.text.length + TURN_HEADER_CHARS > budget) {
+      if (full[side] || s.text.length + TURN_HEADER_CHARS > budget) {
+        full[side] = true;
         omitted++;
         continue;
       }
@@ -104,7 +109,7 @@ export function openEvidence(db: Database.Database, id: number, window = 6) {
 
 function formatOpen(r: NonNullable<ReturnType<typeof openEvidence>>): string {
   const s = r.source;
-  const head = [`[${s.kind}] ${cut(s.title ?? "(untitled)", 300).text}`, s.project_hint && `project: ${cut(s.project_hint, 300).text}`, s.created_at && `created ${s.created_at}`].filter(Boolean).join(" · ");
+  const head = [`[${s.kind}] ${cut(s.title ?? "(untitled)", TITLE_CHARS).text}`, s.project_hint && `project: ${cut(s.project_hint, TITLE_CHARS).text}`, s.created_at && `created ${s.created_at}`].filter(Boolean).join(" · ");
   const turns = r.turns.map((t) => {
     const mark = t.cited ? " ← cited" : "";
     return `--- turn ${t.id} · ${t.role}${t.ts ? ` · ${t.ts}` : ""}${t.isInjected ? " (injected)" : ""}${mark}${t.truncated ? " (truncated)" : ""}\n${t.text}`;
@@ -145,7 +150,7 @@ export function createMcpServer(db: Database.Database, embedder: Embedder | null
       }
       const lines = result.hits.map((h, i) => {
         const when = h.ts ? ` · ${h.ts.slice(0, 16).replace("T", " ")}` : "";
-        return `${i + 1}. turn ${h.turnId} · [${h.kind}] ${h.sourceTitle ?? "(untitled)"}${when} · ${h.role}\n   ${h.snippet}`;
+        return `${i + 1}. turn ${h.turnId} · [${h.kind}] ${cut(h.sourceTitle ?? "(untitled)", 120).text}${when} · ${h.role}\n   ${h.snippet}`;
       });
       const text = [lines.length ? lines.join("\n") : "No results.", ...notes.map((n) => `Note: ${n}`)].join("\n\n");
       return { content: [{ type: "text", text }] };
