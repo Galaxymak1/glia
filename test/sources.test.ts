@@ -8,6 +8,7 @@ import { openDb } from "../src/db.js";
 import { EvidenceStore } from "../src/evidence.js";
 import { migrate } from "../src/migrations.js";
 import { indexClaudeCodeFile, writeSource } from "../src/sources.js";
+import { CC_PARSER_VERSION } from "../src/parsers/claudeCode.js";
 
 const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
 const PROJECTS = "/home/me/.claude/projects";
@@ -42,7 +43,7 @@ describe("indexClaudeCodeFile", () => {
     const raw = put(sessionPath(), v1, "2026-10-20T10:00:00Z");
     expect(ix(raw, NO_EXCLUDES)).toMatchObject({ status: "new", kind: "session", turnsWritten: 2, turnsRemoved: 0 });
     expect(sources()).toEqual([
-      { kind: "cc", external_id: S, title: null, cwd: "/home/me/dev/brain", raw_sha256: raw.sha256, parser_version: "cc@2", created_at: "2026-10-20T10:00:01Z", updated_at: "2026-10-20T10:00:02Z" },
+      { kind: "cc", external_id: S, title: null, cwd: "/home/me/dev/brain", raw_sha256: raw.sha256, parser_version: CC_PARSER_VERSION, created_at: "2026-10-20T10:00:01Z", updated_at: "2026-10-20T10:00:02Z" },
     ]);
     expect(turns().map((t) => [t.external_uuid, t.parent_uuid, t.role])).toEqual([["u1", null, "user"], ["a2", "u1", "assistant"]]);
     expect(ix(raw, NO_EXCLUDES)).toMatchObject({ status: "unchanged", turnsWritten: 0 });
@@ -97,7 +98,7 @@ describe("indexClaudeCodeFile", () => {
     db.prepare("UPDATE sources SET parser_version = 'cc@0'").run();
     for (const extra of ["x1", "x2", "x3"]) db.prepare("INSERT INTO turns (source_id, external_uuid, role, text) VALUES (1, ?, 'user', 'cc@0 only')").run(extra);
     expect(ix(put(sessionPath(), v2, "2026-10-20T10:15:00Z"), NO_EXCLUDES)).toMatchObject({ status: "updated", turnsRemoved: 3 });
-    expect(db.prepare("SELECT parser_version FROM sources").get()).toEqual({ parser_version: "cc@2" });
+    expect(db.prepare("SELECT parser_version FROM sources").get()).toEqual({ parser_version: CC_PARSER_VERSION });
     expect(turns().map((t) => t.external_uuid)).toEqual(["u1", "a2", "u3"]);
   });
 
@@ -130,6 +131,20 @@ describe("writeSource", () => {
     );
     expect(db.prepare("SELECT title, project_hint FROM sources").get()).toEqual({ title: "DB_PASSWORD=[REDACTED:env_secret]", project_hint: "DB_PASSWORD=[REDACTED:env_secret]" });
     expect(turns().map((t) => t.text)).toEqual(["line\nDB_PASSWORD=[REDACTED:env_secret]"]);
+  });
+});
+
+describe("writeSource enrichment", () => {
+  const src = { kind: "cai" as const, external_id: "c1", title: null, project_hint: null, cwd: null, created_at: null, updated_at: null, raw_path: "r", raw_sha256: "s", parser_version: "cai@3" };
+  const row = (text: string, isInjected = false) => ({ externalUuid: "t1", parentUuid: null, role: "user", ts: null, text, isSidechain: false, isInjected });
+  const stored = () => db.prepare("SELECT is_injected, lang FROM turns").all();
+
+  it("stores the injected flag and the detected language, and updates both when they change", () => {
+    writeSource(db, src, [row("Je pense que le bug est dans le parser, tu peux regarder ?")]);
+    expect(stored()).toEqual([{ is_injected: 0, lang: "fr" }]);
+    expect(writeSource(db, src, [row("Je pense que le bug est dans le parser, tu peux regarder ?", true)]).turnsWritten).toBe(1);
+    expect(stored()).toEqual([{ is_injected: 1, lang: "fr" }]);
+    expect(writeSource(db, src, [row("Je pense que le bug est dans le parser, tu peux regarder ?", true)]).turnsWritten).toBe(0);
   });
 });
 

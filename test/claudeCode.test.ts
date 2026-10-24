@@ -70,11 +70,12 @@ describe("parseSession", () => {
     expect(parsed.stats).toEqual({
       lines: 13,
       turns: 4,
-      skippedTypes: { attachment: 1, system: 2, "ai-title": 1, "future-line-type": 1, "brain:unparseable_line": 1 },
+      skippedTypes: { "attachment/hook_additional_context": 1, system: 2, "ai-title": 1, "future-line-type": 1, "brain:unparseable_line": 1 },
       skippedBlocks: { thinking: 2, server_widget: 1 },
       emptyTurns: 1,
       malformed: 2,
       duplicates: 0,
+      injected: 0,
     });
   });
 
@@ -154,7 +155,49 @@ describe("parseMemory", () => {
     const text = "---\nname: prefers-sqlite\ndescription: x\n---\n\nThe user prefers SQLite.\n";
     const parsed = parseMemory(text, "prefers_sqlite.md");
     expect(parsed.title).toBe("prefers-sqlite");
-    expect(parsed.turns).toEqual([{ externalUuid: "prefers_sqlite.md", parentUuid: null, role: "memory", ts: null, text, isSidechain: false }]);
+    expect(parsed.turns).toEqual([{ externalUuid: "prefers_sqlite.md", parentUuid: null, role: "memory", ts: null, text, isSidechain: false, isInjected: false }]);
     expect(parseMemory("\n", "empty.md").turns).toEqual([]);
   });
 });
+
+describe("injected content", () => {
+  const session = [
+    line({ type: "user", uuid: "u1", parentUuid: null, timestamp: "2026-10-20T10:00:00Z", message: { role: "user", content: "Fix it\n\n<system-reminder>\nbe brief\n</system-reminder>" } }),
+    line({ type: "attachment", uuid: "h1", parentUuid: "u1", timestamp: "2026-10-20T10:00:01Z", attachment: { type: "hook_additional_context", content: ["[hook] context one", "context two"] } }),
+    line({ type: "attachment", uuid: "e1", parentUuid: "h1", attachment: { type: "environment", snapshot: {} } }),
+    line({ type: "assistant", uuid: "a1", parentUuid: "e1", timestamp: "2026-10-20T10:00:02Z", message: { role: "assistant", content: [{ type: "text", text: "Done. <system-reminder> is a tag." }] } }),
+    line({ type: "user", uuid: "m1", parentUuid: "a1", isMeta: true, message: { role: "user", content: [{ type: "text", text: "Base directory for this skill: /x" }] } }),
+    line({ type: "user", uuid: "c1", parentUuid: "m1", isCompactSummary: true, message: { role: "user", content: "This session is being continued from a previous conversation." } }),
+    line({ type: "user", uuid: "r1", parentUuid: "c1", message: { role: "user", content: "<task-notification>agent done</task-notification>" } }),
+    line({ type: "user", uuid: "t1", parentUuid: "r1", message: { role: "user", content: [{ type: "tool_result", content: "file.ts\n<system-reminder>file changed</system-reminder>" }] } }),
+  ].join("\n");
+  const parsed = parseSession(session);
+  const byId = Object.fromEntries(parsed.turns.map((t) => [t.externalUuid, t]));
+
+  it("splits reminders out of a user's message into a flagged child turn", () => {
+    expect(byId.u1).toMatchObject({ text: "Fix it", isInjected: false, parentUuid: null });
+    expect(byId["u1#injected"]).toMatchObject({ text: "<system-reminder>\nbe brief\n</system-reminder>", isInjected: true, parentUuid: "u1", role: "user" });
+    expect(byId.t1).toMatchObject({ role: "tool", text: "file.ts", isInjected: false });
+    expect(byId["t1#injected"]).toMatchObject({ role: "tool", isInjected: true, parentUuid: "t1" });
+  });
+
+  it("stores hook additionalContext as an injected turn in the thread, and skips other attachments", () => {
+    expect(byId.h1).toMatchObject({ text: "[hook] context one\ncontext two", isInjected: true, parentUuid: "u1" });
+    expect(byId.a1).toMatchObject({ parentUuid: "h1", isInjected: false, text: "Done. <system-reminder> is a tag." });
+    expect(byId.e1).toBeUndefined();
+    expect(parsed.stats.skippedTypes).toEqual({ "attachment/environment": 1 });
+  });
+
+  it("flags whole messages the harness wrote: meta lines, compaction summaries, messages that are only a notice", () => {
+    expect([byId.m1!.isInjected, byId.c1!.isInjected, byId.r1!.isInjected]).toEqual([true, true, true]);
+    expect(byId["r1#injected"]).toBeUndefined();
+    expect(parsed.stats.injected).toBe(6);
+  });
+
+  it("drops a replaced line's split-off reminders with it", () => {
+    const again = line({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "Fix it, edited" } });
+    const turns = parseSession(`${session}\n${again}`).turns.map((t) => t.externalUuid);
+    expect(turns).not.toContain("u1#injected");
+  });
+});
+

@@ -4,9 +4,10 @@
 // the raw entry stays in the evidence store.
 
 import { createHash } from "node:crypto";
+import { ENRICH_VERSION, splitInjected } from "../enrich.js";
 import type { SourceRow, TurnRow } from "../sources.js";
 
-export const CAI_PARSER_VERSION = "cai@2";
+export const CAI_PARSER_VERSION = `cai@3+${ENRICH_VERSION}`;
 
 /** Categories found in an export, and whether they are ingested (owner decision, #5). */
 export const EXPORT_CATEGORIES = {
@@ -118,8 +119,11 @@ function toolResultText(content: unknown, stats: CaiStats): string {
     .join("\n");
 }
 
-/** Searchable text of a chat message: its blocks, then the extracted text of its attachments. */
-function messageText(m: Json, stats: CaiStats): string {
+/**
+ * Searchable text of a chat message: its blocks, then the extracted text of its attachments;
+ * `injected` collects the context claude.ai added to it (memory snapshots, date notes, reminders).
+ */
+function messageText(m: Json, stats: CaiStats, injected: string[] = []): string {
   const parts: string[] = [];
   for (const b of list(m.content)) {
     if (!isObject(b)) continue;
@@ -139,8 +143,11 @@ function messageText(m: Json, stats: CaiStats): string {
       case "image":
         parts.push("[image]");
         break;
+      case "injected_prompt_block":
+        if (str(b.prompt)?.trim()) injected.push(str(b.prompt)!.trim());
+        break;
       default:
-        // thinking, injected_prompt_block (injected context, #6) and unknown types.
+        // thinking and unknown types.
         bump(stats, String(b.type));
     }
   }
@@ -167,7 +174,22 @@ export function parseConversations(data: unknown, stats: CaiStats): ParsedSource
       // The export has messages with no content at all: they are not stored, so a turn's
       // parent is its nearest ancestor that is.
       const parentOf = new Map(messages.map((m) => [str(m.uuid)!, str(m.parent_message_uuid)]));
-      const texts = new Map(messages.map((m) => [str(m.uuid)!, messageText(m, stats)]));
+      // A human message's own words and the context injected into it (blocks and tagged spans).
+      const injectedOf = new Map<string, string[]>();
+      const texts = new Map(
+        messages.map((m) => {
+          const injected: string[] = [];
+          let text = messageText(m, stats, injected);
+          if (m.sender === "human") {
+            const split = splitInjected(text);
+            text = split.own;
+            injected.push(...split.injected);
+          }
+          injectedOf.set(str(m.uuid)!, injected);
+          // A message holding nothing but injected context is stored whole, flagged.
+          return [str(m.uuid)!, text || injected.join("\n\n")];
+        }),
+      );
       const nearestStored = (start: string | null): string | null => {
         const seen = new Set<string>();
         let p = start;
@@ -183,14 +205,20 @@ export function parseConversations(data: unknown, stats: CaiStats): ParsedSource
         if (!text) continue;
         // Never its own parent, directly or through a cycle of empty messages.
         const parent = nearestStored(str(m.parent_message_uuid));
-        turns.push({
+        const injected = injectedOf.get(uuid)!;
+        const onlyInjected = injected.length > 0 && text === injected.join("\n\n");
+        const turn: TurnRow = {
           externalUuid: uuid,
           parentUuid: parent === uuid ? null : parent,
           role: m.sender === "human" ? "user" : m.sender === "assistant" ? "assistant" : String(m.sender ?? "unknown"),
           ts: str(m.created_at),
           text,
           isSidechain: false,
-        });
+          isInjected: onlyInjected,
+        };
+        turns.push(turn);
+        // The injected context becomes a child turn of the message, flagged: searchable, never extracted.
+        if (injected.length && !onlyInjected) turns.push({ ...turn, externalUuid: `${uuid}#injected`, parentUuid: uuid, text: injected.join("\n\n"), isInjected: true });
       }
       return {
         source: { kind: "cai", external_id: str(c.uuid)!, title: str(c.name), project_hint: null, cwd: null, created_at: str(c.created_at), updated_at: str(c.updated_at) },
