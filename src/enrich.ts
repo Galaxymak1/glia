@@ -106,7 +106,11 @@ function prose(text: string): string {
   let t = text.slice(0, MAX_CHARS).replace(ATTACHMENTS, "").replace(TOOL_CALL, " ");
   t = cut(t, pairedSpans(t, PASTED, () => "</pasted_content>"), " ");
   t = cut(t, pairedSpans(t, FENCE, () => "```"), " ");
-  t = cut(t, pairedSpans(t, BACKTICK, () => "`"), " ");
+  // Inline code never spans lines: a stray backtick cannot swallow the prose after it.
+  t = t
+    .split("\n")
+    .map((line) => cut(line, pairedSpans(line, BACKTICK, () => "`"), " "))
+    .join("\n");
   return t.replace(/\S+/g, (word) => (/[/\\]/.test(word) ? " " : word));
 }
 

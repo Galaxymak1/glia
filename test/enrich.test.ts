@@ -42,6 +42,7 @@ describe("detectLang", () => {
   it("ignores code, links and paths, and gives no language to text without prose", () => {
     expect(detectLang("```ts\nconst the = is.not.a.sentence;\n```\nsrc/the/and/is.ts https://the.is/and")).toBeNull();
     expect(detectLang("OK")).toBeNull();
+    expect(detectLang("le `x\nJe pense que le bug est dans le parser\net `y")).toBe("fr");
     expect(detectLang('ça plante encore\n<pasted_content id="1">\nError: the file is not found and it is missing\n</pasted_content>')).toBe("fr");
     expect(detectLang('[tool_use Bash] {"command":"ls -la"}')).toBeNull();
   });
