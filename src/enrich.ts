@@ -11,21 +11,61 @@ export const ENRICH_VERSION = "enrich@1";
  * Tags the harness wraps around text it adds to a user-role message: reminders, background
  * task notices, the output and caveat of a local slash command, hook output.
  */
-const INJECTED_TAGS = ["system-reminder", "task-notification", "local-command-caveat", "local-command-stdout", "local-command-stderr", "user-prompt-submit-hook"];
-const INJECTED_SPAN = new RegExp(String.raw`<(${INJECTED_TAGS.join("|")})>[\s\S]*?</\1>`, "g");
+const INJECTED_TAGS = [
+  "system-reminder",
+  "task-notification",
+  "local-command-caveat",
+  "local-command-stdout",
+  "local-command-stderr",
+  "user-prompt-submit-hook",
+  "ide_opened_file",
+  "ide_selection",
+];
+const INJECTED_OPENER = new RegExp(`<(${INJECTED_TAGS.join("|")})>`, "g");
+
+/**
+ * The `[start, end)` ranges of `open`…`close` pairs in `text`, in order. Linear: each closer is
+ * looked up with indexOf, and once one is missing no later opener of that kind can close.
+ */
+function pairedSpans(text: string, openers: RegExp, closerOf: (opener: RegExpExecArray) => string): [number, number][] {
+  const spans: [number, number][] = [];
+  const unclosed = new Set<string>();
+  openers.lastIndex = 0;
+  for (let m = openers.exec(text); m; m = openers.exec(text)) {
+    const close = closerOf(m);
+    if (unclosed.has(close)) continue;
+    const end = text.indexOf(close, m.index + m[0].length);
+    if (end < 0) {
+      unclosed.add(close);
+      continue;
+    }
+    spans.push([m.index, end + close.length]);
+    openers.lastIndex = end + close.length;
+  }
+  return spans;
+}
+
+/** `text` without the given ranges, each replaced by `filler`. */
+function cut(text: string, spans: [number, number][], filler = ""): string {
+  let out = "";
+  let at = 0;
+  for (const [start, end] of spans) {
+    out += text.slice(at, start) + filler;
+    at = end;
+  }
+  return out + text.slice(at);
+}
 
 /**
  * Splits a user-role text into what its author wrote and the injected spans in it. A tag
  * left open is not a span: the text is kept as written.
  */
 export function splitInjected(text: string): { own: string; injected: string[] } {
-  const injected = text.match(INJECTED_SPAN) ?? [];
-  if (!injected.length) return { own: text, injected };
-  const own = text
-    .replace(INJECTED_SPAN, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return { own, injected };
+  const spans = pairedSpans(text, INJECTED_OPENER, (m) => `</${m[1]}>`);
+  if (!spans.length) return { own: text, injected: [] };
+  // Only the ends are trimmed: the author's own blank lines stay as written.
+  const own = cut(text, spans).trim();
+  return { own, injected: spans.map(([start, end]) => text.slice(start, end)) };
 }
 
 export type Lang = "fr" | "en" | "mixed";
@@ -52,8 +92,23 @@ const EN = new Set(
 // Code, links and paths say nothing about the language a turn is written in; nor do pasted
 // blocks, tool calls (one `[tool_use <name>] <json>` line each) or attached files, which
 // parsers append after an `[attachment <name>]` line.
+// Every step is linear in the text: paired blocks are cut with indexOf, paths and links are
+// dropped word by word, and only the first MAX_CHARS are read.
 const ATTACHMENTS = /(?:^|\n)\[attachment [^\]\n]*\][\s\S]*$/;
-const NOT_PROSE = /<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content>|^\[tool_use [^\]\n]*\].*$|```[\s\S]*?```|`[^`\n]*`|https?:\/\/\S+|\S*[/\\]\S*/gm;
+const TOOL_CALL = /^\[tool_use [^\]\n]*\].*$/gm;
+const PASTED = /<pasted_content\b[^>\n]*>/g;
+const FENCE = /```/g;
+const BACKTICK = /`/g;
+/** The language of a turn shows in its first pages; a multi-megabyte tool result is not read to the end. */
+const MAX_CHARS = 64 * 1024;
+
+function prose(text: string): string {
+  let t = text.slice(0, MAX_CHARS).replace(ATTACHMENTS, "").replace(TOOL_CALL, " ");
+  t = cut(t, pairedSpans(t, PASTED, () => "</pasted_content>"), " ");
+  t = cut(t, pairedSpans(t, FENCE, () => "```"), " ");
+  t = cut(t, pairedSpans(t, BACKTICK, () => "`"), " ");
+  return t.replace(/\S+/g, (word) => (/[/\\]/.test(word) ? " " : word));
+}
 
 /** Below this many function words a text is too short or too technical to call: no language. */
 const MIN_HITS = 2;
@@ -70,7 +125,7 @@ const MIXED_MIN_HITS = 4;
 export function detectLang(text: string): Lang | null {
   let fr = 0;
   let en = 0;
-  for (const sentence of text.replace(ATTACHMENTS, "").replace(NOT_PROSE, " ").split(/[.!?;:\n]+/)) {
+  for (const sentence of prose(text).split(/[.!?;:\n]+/)) {
     let f = 0;
     let e = 0;
     // Elisions split off: l'erreur gives l, erreur; it's and don't stay whole.
