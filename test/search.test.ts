@@ -151,6 +151,17 @@ describe("search", () => {
     expect(en.hits.slice(0, 2).map((h) => h.turnId)).toContain(db.prepare("SELECT t.id FROM turns t JOIN sources s ON s.id = t.source_id WHERE s.external_id = 'c2' AND external_uuid = 'u1'").pluck().get());
   });
 
+  it("applies the kind and date filters to the meaning side too", async () => {
+    const e = new FakeEmbedder();
+    await buildIndex(db, e);
+    const ids = async (opts: Parameters<typeof search>[3]) => (await search(db, e, "un chat qui dort", opts)).hits.map((h) => h.turnId);
+    expect(await ids({ kind: "cai" })).toContain(idOf("a2"));
+    expect(await ids({ kind: "cc" })).toEqual([]);
+    expect(await ids({ to: "2026-10-20T10:00:01Z" })).not.toContain(idOf("a2"));
+    expect(await ids({ from: "2026-10-20", to: "2026-10-20" })).toContain(idOf("a2"));
+    expect(await ids({ from: "2026-10-21" })).toEqual([]);
+  });
+
   it("fuses keyword and meaning ranks, and a turn in both lists ranks first", async () => {
     const e = new FakeEmbedder();
     await buildIndex(db, e);

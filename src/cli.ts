@@ -6,6 +6,8 @@ import { defaultDbPath, openDb } from "./db.js";
 import { type Config, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
 import { OllamaEmbedder } from "./embed.js";
 import { search } from "./search.js";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { createMcpServer } from "./mcp.js";
 import { buildIndex, indexStatus } from "./vectors.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
 import { isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
@@ -25,6 +27,7 @@ Commands:
   index [--rebuild]             Embed new and changed turns into the meaning index (Ollama); --rebuild
                                 deletes the index and embeds everything again
   search <query...>             Hybrid keyword + meaning search over turns
+  mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
 
 Options:
   --db <path>   Database file (default: $BRAIN_DB, else ~/.local/share/ai_second_brain/brain.db)
@@ -255,6 +258,19 @@ async function searchCommand(dbPath: string, config: Config, query: string, limi
   }
 }
 
+/** Runs until the client closes stdin. stdout carries the protocol only: messages go to stderr. */
+function mcp(dbPath: string, config: Config): number {
+  const db = openDb(dbPath);
+  migrate(db);
+  const { url, model } = embeddingSettings(config);
+  const embedder = new OllamaEmbedder(model, url, 120_000);
+  const handle = serveStdio(() => createMcpServer(db, embedder), {
+    onerror: (err) => console.error(`brain mcp: ${err.message}`),
+  });
+  process.stdin.once("end", () => void handle.close().finally(() => db.close()));
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -306,6 +322,8 @@ async function main(argv: string[]): Promise<number> {
       }
       return searchCommand(values.db ?? defaultDbPath(), loadConfig(), args.join(" "), limit, values.injected ?? false, values.json ?? false);
     }
+    case "mcp":
+      return mcp(values.db ?? defaultDbPath(), loadConfig());
     default:
       console.error(`Unknown command: ${command}\n\n${USAGE}`);
       return 1;
