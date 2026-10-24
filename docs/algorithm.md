@@ -153,6 +153,12 @@ Before chunking, each `[tool_use <name>] <json>` line in a turn is cut to its fi
 
 When Ollama cannot be reached, search returns the keyword results and says so. It also warns when turns are not yet in the meaning index, or when chunks were embedded with another model, which search ignores.
 
+## 7. Serving over MCP (WP8, `src/mcp.ts`)
+
+- **`search_evidence`** runs the search in section 6. The `source_kind`, `from` and `to` filters go into both indexes' SQL, so they shape the candidate lists instead of thinning the fused result. `from` compares `ts >= from`. `to` compares the first characters of `ts`, as many as `to` has, so a bare date covers its whole day. Turns without a `ts` drop out once either bound is set. With any filter set, the meaning side reads its 1,000 nearest chunks instead of 200, because the nearest ones may all be filtered out.
+- **`open_evidence`** walks the conversation tree, not the clock. Before the cited turn: the parent chain. After it: the earliest child at each step, so a regenerated answer does not break into the main line. Injected turns are walked through but not shown. Excluded sources are not found.
+- **Size:** the cited turn is cut at 24,000 characters and each neighbour at 2,000. The result is capped at 50,000 characters (about 18k tokens at 2.75 characters per token). When the cap is reached, the neighbours nearest the cited turn are kept, alternating after and before.
+
 ## Known gaps
 
 - Pruning superseded transcript copies, and clean-up of `.tmp` files (#20).
@@ -161,6 +167,8 @@ When Ollama cannot be reached, search returns the keyword results and says so. I
 - `queued_command` attachments (a prompt typed while Claude was busy) are skipped. Most of them also appear later as a user line, but not all of them.
 - Code pasted without fences can come out as `mixed`.
 - The keyword query is an OR of every word, function words included. bm25 weighs common words down, but a query made only of them matches almost everything.
+- `open_evidence` follows the earliest child, so a later branch of a claude.ai conversation is reached only by opening one of its own turns.
+- A date filter on the meaning side still reads a fixed 1,000 nearest chunks: a narrow window over a large corpus can miss meaning hits that keyword search would not.
 - Chunk size, the context header and tool-output handling are first guesses, to be tuned on the evaluation set (#9, #10).
 
 ## Changelog
@@ -173,4 +181,5 @@ When Ollama cannot be reached, search returns the keyword results and says so. I
 | WP4 Claude Code parser | #21 | `cc@2`: turns, nearest stored parent, fail-closed exclusion, older-copy rule. |
 | WP5 claude.ai export | #23 | `cai@2`: five kinds, all branches, structure-based recognition, HTML as text, final scrub in `writeSource`. |
 | WP6 turn enrichment | #24 | `enrich@1`: injected flags and split-off `#injected` turns, hook context stored, per-turn language. |
-| WP7 hybrid index | this PR | Schema v4 (`chunks`, `chunks_vec`; `turns_vec` dropped). Chunks with context headers, BGE-M3 Q8_0 via Ollama, incremental `brain index`, `brain search` with RRF k = 60. |
+| WP7 hybrid index | #25 | Schema v4 (`chunks`, `chunks_vec`; `turns_vec` dropped). Chunks with context headers, BGE-M3 Q8_0 via Ollama, incremental `brain index`, `brain search` with RRF k = 60. |
+| WP8 local MCP | this PR | `brain mcp` over stdio: `search_evidence` (kind and date filters in both indexes) and `open_evidence` (tree walk, size caps). |
