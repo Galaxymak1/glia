@@ -11,12 +11,39 @@ export const RRF_K = 60;
 const CANDIDATES = 50;
 /** Chunks read from the vector index: several can belong to one turn. */
 const VECTOR_CHUNKS = 200;
+/** With a kind or date filter, more chunks are read: the nearest ones may all be filtered out. */
+const VECTOR_CHUNKS_FILTERED = 1000;
 const SNIPPET_CHARS = 240;
 
 export interface SearchOptions {
   limit?: number;
   /** Include turns the harness injected (reminders, hook context); left out by default. */
   includeInjected?: boolean;
+  /** Only turns of this source kind (`cc`, `cai`, ...). */
+  kind?: string;
+  /** Only turns whose `ts` is at or after this ISO date or datetime. */
+  from?: string;
+  /** Only turns whose `ts`, cut to this value's length, is at or before it: `2026-10-20` covers the day. */
+  to?: string;
+}
+
+/** The SQL condition and parameters shared by both indexes; turns `t` and sources `s` are in scope. */
+function filterSql(opts: SearchOptions): { sql: string; params: (string | number)[] } {
+  let sql = "s.excluded = 0 AND (? OR t.is_injected = 0)";
+  const params: (string | number)[] = [opts.includeInjected ? 1 : 0];
+  if (opts.kind !== undefined) {
+    sql += " AND s.kind = ?";
+    params.push(opts.kind);
+  }
+  if (opts.from !== undefined) {
+    sql += " AND t.ts >= ?";
+    params.push(opts.from);
+  }
+  if (opts.to !== undefined) {
+    sql += " AND substr(t.ts, 1, length(?)) <= ?";
+    params.push(opts.to, opts.to);
+  }
+  return { sql, params };
 }
 
 export interface SearchHit {
@@ -49,30 +76,33 @@ export function ftsQuery(query: string): string | null {
   return words.length ? words.map((w) => `"${w}"`).join(" OR ") : null;
 }
 
-function keywordRanks(db: Database.Database, match: string, includeInjected: boolean): number[] {
+function keywordRanks(db: Database.Database, match: string, opts: SearchOptions): number[] {
+  const filter = filterSql(opts);
   const rows = db
     .prepare(
       `SELECT t.id FROM turns_fts f
        JOIN turns t ON t.id = f.rowid JOIN sources s ON s.id = t.source_id
-       WHERE turns_fts MATCH ? AND s.excluded = 0 AND (? OR t.is_injected = 0)
+       WHERE turns_fts MATCH ? AND ${filter.sql}
        ORDER BY bm25(turns_fts), t.id LIMIT ?`,
     )
-    .all(match, includeInjected ? 1 : 0, CANDIDATES) as { id: number }[];
+    .all(match, ...filter.params, CANDIDATES) as { id: number }[];
   return rows.map((r) => r.id);
 }
 
 /** Turns in order of their best chunk, and the best chunk of each. */
-function meaningRanks(db: Database.Database, vector: Float32Array, model: string, includeInjected: boolean): { ids: number[]; bestChunk: Map<number, number> } {
+function meaningRanks(db: Database.Database, vector: Float32Array, model: string, opts: SearchOptions): { ids: number[]; bestChunk: Map<number, number> } {
+  const filter = filterSql(opts);
+  const filtered = opts.kind !== undefined || opts.from !== undefined || opts.to !== undefined;
   const rows = db
     .prepare(
       `SELECT c.turn_id, c.ord FROM (
          SELECT chunk_id, distance FROM chunks_vec WHERE embedding MATCH ? AND k = ? AND model = ?
        ) v
        JOIN chunks c ON c.id = v.chunk_id JOIN turns t ON t.id = c.turn_id JOIN sources s ON s.id = t.source_id
-       WHERE s.excluded = 0 AND (? OR t.is_injected = 0)
+       WHERE ${filter.sql}
        ORDER BY v.distance, c.turn_id, c.ord`,
     )
-    .all(vector, VECTOR_CHUNKS, model, includeInjected ? 1 : 0) as { turn_id: number; ord: number }[];
+    .all(vector, filtered ? VECTOR_CHUNKS_FILTERED : VECTOR_CHUNKS, model, ...filter.params) as { turn_id: number; ord: number }[];
   const bestChunk = new Map<number, number>();
   for (const r of rows) {
     if (bestChunk.size >= CANDIDATES) break;
@@ -88,9 +118,8 @@ const oneLine = (s: string) => {
 
 export async function search(db: Database.Database, embedder: Embedder | null, query: string, opts: SearchOptions = {}): Promise<SearchResult> {
   const limit = opts.limit ?? 10;
-  const includeInjected = opts.includeInjected ?? false;
   const match = ftsQuery(query);
-  const keyword = match ? keywordRanks(db, match, includeInjected) : [];
+  const keyword = match ? keywordRanks(db, match, opts) : [];
 
   let meaning: number[] = [];
   let bestChunk = new Map<number, number>();
@@ -98,7 +127,7 @@ export async function search(db: Database.Database, embedder: Embedder | null, q
   if (embedder && query.trim()) {
     try {
       const [vector] = await embedder.embed([query.trim()]);
-      ({ ids: meaning, bestChunk } = meaningRanks(db, vector!, embedder.model, includeInjected));
+      ({ ids: meaning, bestChunk } = meaningRanks(db, vector!, embedder.model, opts));
     } catch (err) {
       meaningError = err instanceof Error ? err.message : String(err);
     }
