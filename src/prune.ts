@@ -32,33 +32,44 @@ export function isSuperseded(older: string, newer: string): boolean {
   return newer.startsWith(prefix) || newer === prefix.slice(0, -1);
 }
 
-const likeEscape = (s: string) => s.replace(/[\\%_]/g, "\\$&");
+/** The transcript a raw copy was read from, as `<session>.jsonl` or `<session>/subagents/agent-<id>.jsonl`. */
+const TRANSCRIPT_ORIGIN = /\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\/subagents\/agent-[\w-]+)?\.jsonl)$/;
 
 /** Prunes, for every Claude Code transcript source, the older copies its current copy supersedes. */
 export function pruneSuperseded(db: Database.Database, store: EvidenceStore, now = new Date()): PruneReport {
   const report: PruneReport = { pruned: 0, bytesFreed: 0, kept: 0 };
+  // One pass over the copies no source points to, grouped by the transcript they were read from.
+  const byTranscript = new Map<string, Map<string, number>>();
+  const loose = db
+    .prepare(
+      `SELECT f.sha256, f.stored_bytes, o.origin_path FROM raw_files f JOIN raw_file_origins o ON o.sha256 = f.sha256
+       WHERE f.pruned_at IS NULL AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.raw_sha256 = f.sha256)`,
+    )
+    .iterate() as Iterable<{ sha256: string; stored_bytes: number; origin_path: string }>;
+  for (const r of loose) {
+    const m = TRANSCRIPT_ORIGIN.exec(r.origin_path);
+    if (!m) continue;
+    const copies = byTranscript.get(m[1]!) ?? new Map<string, number>();
+    copies.set(r.sha256, r.stored_bytes);
+    byTranscript.set(m[1]!, copies);
+  }
+  if (!byTranscript.size) return report;
   const sources = db.prepare("SELECT external_id, raw_sha256 FROM sources WHERE kind = 'cc'").all() as { external_id: string; raw_sha256: string }[];
-  const candidates = db.prepare(
-    `SELECT DISTINCT f.sha256, f.stored_bytes FROM raw_files f JOIN raw_file_origins o ON o.sha256 = f.sha256
-     WHERE o.origin_path LIKE ? ESCAPE '\\' AND f.sha256 <> ? AND f.pruned_at IS NULL
-       AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.raw_sha256 = f.sha256)`,
-  );
   for (const source of sources) {
     // external_id is `<session>` or `<session>/agent-<id>`, as the file sits under projects/.
     const [sessionId, agent] = source.external_id.split("/");
-    const file = agent ? `${sessionId}/subagents/${agent}.jsonl` : `${sessionId}.jsonl`;
-    const older = candidates.all(`%/${likeEscape(file)}`, source.raw_sha256) as { sha256: string; stored_bytes: number }[];
-    if (!older.length) continue;
+    const older = byTranscript.get(agent ? `${sessionId}/subagents/${agent}.jsonl` : `${sessionId}.jsonl`);
+    if (!older) continue;
     let current: string;
     try {
       current = store.read(source.raw_sha256);
     } catch {
       continue; // the current copy is missing or damaged: keep every older one
     }
-    for (const copy of older) {
+    for (const [sha, storedBytes] of older) {
       let text: string;
       try {
-        text = store.read(copy.sha256);
+        text = store.read(sha);
       } catch {
         report.kept++;
         continue;
@@ -67,9 +78,9 @@ export function pruneSuperseded(db: Database.Database, store: EvidenceStore, now
         report.kept++;
         continue;
       }
-      store.prune(copy.sha256, now);
+      store.prune(sha, now);
       report.pruned++;
-      report.bytesFreed += copy.stored_bytes;
+      report.bytesFreed += storedBytes;
     }
   }
   return report;

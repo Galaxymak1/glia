@@ -171,6 +171,7 @@ When Ollama cannot be reached, search returns the keyword results and says so. I
 
 ## Known gaps
 
+- A pruned copy is recognised by its bytes. A byte-identical file at another session's path is skipped too; real transcripts carry their session id in every line, so this is not expected. Copies kept as not superseded are compared again on every ingest.
 - The opt-out marker is read in Claude Code sessions only. A claude.ai conversation cannot opt out yet (no marker is read in exports).
 - Files nested inside artifact bundles are not ingested (15 entries in the current export).
 - `queued_command` attachments (a prompt typed while Claude was busy) are skipped. Most of them also appear later as a user line, but not all of them.

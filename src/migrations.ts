@@ -211,6 +211,8 @@ export const migrations: Migration[] = [
         PRIMARY KEY (sha256, origin_path)
       );
       INSERT INTO raw_file_origins (sha256, origin_path, first_seen) SELECT sha256, origin_path, received_at FROM raw_files;
+      -- Pruning and purging ask which sources still point to a raw file.
+      CREATE INDEX sources_raw_sha256 ON sources (raw_sha256);
     `,
   },
 ];
