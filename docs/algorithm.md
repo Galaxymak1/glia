@@ -35,10 +35,10 @@ flowchart LR
 
 ### Session opt-out (#22, `src/optOut.ts`)
 
-- **Marker:** `#nobrain` (any case) on a line of its own, in a message the user typed. Tool output, Claude's text, injected context, compaction summaries and subagent prompts do not count. Neither does the marker inside a sentence, so talking about it ("#nobrain is fine") opts nothing out.
-- **Scope:** the session transcript and everything in its `<id>/` folder (subagent transcripts, saved tool output). A file in the folder is decided by reading the transcript next to it, because the walk reaches the folder first.
+- **Marker:** `#nobrain` (any case) on a line of its own, in a message the user typed, sent or queued while Claude was busy (`queued_command` attachments from a human). Tool output, Claude's text, injected context, compaction summaries and subagent prompts do not count. Neither does the marker inside a sentence, so talking about it ("#nobrain is fine") opts nothing out.
+- **Scope:** the session transcript and everything in its `<id>/` folder (subagent transcripts, saved tool output, an export ZIP put there). A file in the folder is decided by reading the transcript next to it, because the walk reaches the folder first. The session is read from the file's place under `projects/`, else from its path on disk, so a session folder copied elsewhere is recognised as long as its transcript sits next to it.
 - **Before storing:** an opted-out session's files are never scrubbed into the store.
-- **Purge, once:** the first ingest that sees the marker deletes the session's sources (turns, chunks and vectors go with them) and every raw copy whose origin is the transcript or its folder, files included. A raw file still backing another source is kept.
+- **Purge, once:** the first ingest that sees the marker deletes the session's sources (turns, chunks and vectors go with them) and every raw copy whose origin is the transcript or its folder. A raw file still backing another source is kept. Files are deleted before rows: a failed delete stops the purge before any row changes, and a crash in between is purged again by the next ingest.
 - **Audit:** `opt_outs` (schema v5) records the session id, the time and the purge counts, never content. Later ingests skip the session without reading it again.
 
 ## 2. Parsing (WP4, WP5)
@@ -170,6 +170,7 @@ When Ollama cannot be reached, search returns the keyword results and says so. I
 ## Known gaps
 
 - Pruning superseded transcript copies, and clean-up of `.tmp` files (#20).
+- Opt-out purge finds a raw copy by its first recorded origin. A file of the session folder whose identical bytes were first seen elsewhere is not purged (second origins are not recorded, #20).
 - The opt-out marker is read in Claude Code sessions only. A claude.ai conversation cannot opt out yet (no marker is read in exports).
 - Files nested inside artifact bundles are not ingested (15 entries in the current export).
 - `queued_command` attachments (a prompt typed while Claude was busy) are skipped. Most of them also appear later as a user line, but not all of them.

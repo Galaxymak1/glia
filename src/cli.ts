@@ -101,6 +101,19 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           excluded++;
           continue;
         }
+        // A session the user opted out of (#nobrain) is not stored, nor its folder; what was
+        // stored before the marker was typed is purged once.
+        const ses = sessionOf(view(path)) ?? sessionOf(path);
+        if (ses && optOutCheck.isOptedOut(ses.sessionId, path)) {
+          if (!optedOut.has(ses.sessionId) && !isOptedOut(db, ses.sessionId)) {
+            const p = optOut(db, rawDirFor(dbPath), ses.sessionId);
+            purged.sources += p.sources;
+            purged.rawFiles += p.rawFiles;
+          }
+          optedOut.add(ses.sessionId);
+          optedOutFiles++;
+          continue;
+        }
         if (path.endsWith(".zip")) {
           let data: Buffer;
           try {
@@ -149,19 +162,6 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           data = readFileSync(path);
         } catch (err) {
           fail(fsError(path, err));
-          continue;
-        }
-        // A session the user opted out of (#nobrain) is not stored, nor its folder; what was
-        // stored before the marker was typed is purged once.
-        const ses = sessionOf(view(path));
-        if (ses && optOutCheck.isOptedOut(ses.sessionId, path, ses.isTranscript ? data : undefined)) {
-          if (!optedOut.has(ses.sessionId) && !isOptedOut(db, ses.sessionId)) {
-            const p = optOut(db, rawDirFor(dbPath), ses.sessionId);
-            purged.sources += p.sources;
-            purged.rawFiles += p.rawFiles;
-          }
-          optedOut.add(ses.sessionId);
-          optedOutFiles++;
           continue;
         }
         try {
@@ -220,7 +220,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           (purged.sources || purged.rawFiles ? `; purged ${purged.sources} sources and ${purged.rawFiles} raw files stored earlier` : ""),
       );
     }
-        const types = Object.entries(skippedTypes).sort((a, b) => b[1] - a[1]);
+    const types = Object.entries(skippedTypes).sort((a, b) => b[1] - a[1]);
     if (types.length) console.log(`Skipped non-turn lines: ${types.map(([t, n]) => `${t} ${n}`).join(", ")}`);
     return failed ? 1 : 0;
   } finally {

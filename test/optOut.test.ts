@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -14,6 +14,13 @@ describe("hasOptOutMarker", () => {
     expect(hasOptOutMarker(user("#nobrain"))).toBe(true);
     expect(hasOptOutMarker(user("private stuff below\n  #NoBrain  \nthanks"))).toBe(true);
     expect(hasOptOutMarker(user([{ type: "text", text: "#nobrain" }]))).toBe(true);
+  });
+
+  it("counts a prompt queued while Claude was busy, typed by the user", () => {
+    const queued = (prompt: string, kind = "human") => line({ type: "attachment", uuid: "q", attachment: { type: "queued_command", prompt, origin: { kind } } });
+    expect(hasOptOutMarker(queued("#nobrain"))).toBe(true);
+    expect(hasOptOutMarker(queued("#nobrain is the marker"))).toBe(false);
+    expect(hasOptOutMarker(queued("#nobrain", "agent"))).toBe(false);
   });
 
   it("does not count talk about the marker, or the marker inside a word", () => {
@@ -41,6 +48,7 @@ describe("sessionOf", () => {
     expect(sessionOf(`/projects/-p/${S}/subagents/agent-a1.jsonl`)).toEqual({ sessionId: S, isTranscript: false });
     expect(sessionOf(`/projects/-p/${S}/tool-results/out.txt`)).toEqual({ sessionId: S, isTranscript: false });
     expect(sessionOf(`/projects/-p/memory/MEMORY.md`)).toBeNull();
+    expect(sessionOf(`/backup/${S}/subagents/agent-a1.jsonl`)).toEqual({ sessionId: S, isTranscript: false });
   });
 });
 
@@ -90,5 +98,12 @@ describe("brain ingest with #nobrain", () => {
     d = open();
     expect(d.prepare("SELECT count(*) AS n FROM sources").get()).toEqual({ n: 1 });
     d.close();
+
+    // A copy of the session folder put outside projects/, with its transcript next to it.
+    const backup = join(dir, "backup");
+    mkdirSync(join(backup, S, "subagents"), { recursive: true });
+    cpSync(join(project, `${S}.jsonl`), join(backup, `${S}.jsonl`));
+    cpSync(join(project, S, "subagents", "agent-a1.jsonl"), join(backup, S, "subagents", "agent-a1.jsonl"));
+    expect(ingest(db, join(backup, S))).toMatch(/^Stored 0 new files[^]*1 sessions opted out \(#nobrain\): 1 files not stored\n/);
   });
 });
