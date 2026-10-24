@@ -87,9 +87,12 @@ export function optOut(db: Database.Database, rawDir: string, sessionId: string,
   const sources = db
     .prepare(`SELECT id, raw_sha256 FROM sources WHERE kind = 'cc' AND (external_id = ? OR external_id LIKE ? ESCAPE '\\')`)
     .all(sessionId, `${sessionId.replace(/[\\%_]/g, "\\$&")}/agent-%`) as { id: number; raw_sha256: string }[];
-  // Older copies of a growing transcript, and files of the session folder, are found by their origin.
+  // Older copies of a growing transcript, and files of the session folder, are found by any of their origins.
   const copies = db
-    .prepare(`SELECT sha256, stored_path FROM raw_files WHERE origin_path LIKE ? OR origin_path LIKE ?`)
+    .prepare(
+      `SELECT DISTINCT f.sha256, f.stored_path FROM raw_files f JOIN raw_file_origins o ON o.sha256 = f.sha256
+       WHERE o.origin_path LIKE ? OR o.origin_path LIKE ?`,
+    )
     .all(`%/${sessionId}.jsonl`, `%/${sessionId}/%`) as { sha256: string; stored_path: string }[];
   const rawFile = db.prepare("SELECT stored_path FROM raw_files WHERE sha256 = ?");
   const bySha = new Map(copies.map((c) => [c.sha256, c.stored_path]));
