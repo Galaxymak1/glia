@@ -95,7 +95,7 @@ describe("brain ingest prunes superseded transcript copies", () => {
     ingest(db, join(dir, "projects2"));
     // Rewritten, not appended: the first line differs, and there are more turns.
     writeFileSync(file, turn(1).replace("message 1", "message one") + turn(2) + turn(3));
-    expect(ingest(db, join(dir, "projects2"))).not.toContain("Pruned");
+    expect(ingest(db, join(dir, "projects2"))).toContain("Pruned 0 superseded transcript copies (0.0 MB compressed); kept 1 older copies the current one does not hold in full");
     const d = new Database(db, { readonly: true });
     expect(d.prepare("SELECT count(*) AS n FROM raw_files WHERE pruned_at IS NULL").get()).toEqual({ n: 2 });
     d.close();
