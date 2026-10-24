@@ -33,6 +33,14 @@ flowchart LR
 - **Owner-only.** The database is chmod 600 and its folder 700.
 - **Exclusion.** Claude Code project folders matching `claudeCode.exclude` in the config are never stored or parsed. The check fails closed: any folder of the path that matches excludes the file, and that includes an export ZIP found inside one.
 
+### Session opt-out (#22, `src/optOut.ts`)
+
+- **Marker:** `#nobrain` (any case) on a line of its own, in a message the user typed. Tool output, Claude's text, injected context, compaction summaries and subagent prompts do not count. Neither does the marker inside a sentence, so talking about it ("#nobrain is fine") opts nothing out.
+- **Scope:** the session transcript and everything in its `<id>/` folder (subagent transcripts, saved tool output). A file in the folder is decided by reading the transcript next to it, because the walk reaches the folder first.
+- **Before storing:** an opted-out session's files are never scrubbed into the store.
+- **Purge, once:** the first ingest that sees the marker deletes the session's sources (turns, chunks and vectors go with them) and every raw copy whose origin is the transcript or its folder, files included. A raw file still backing another source is kept.
+- **Audit:** `opt_outs` (schema v5) records the session id, the time and the purge counts, never content. Later ingests skip the session without reading it again.
+
 ## 2. Parsing (WP4, WP5)
 
 Parsers are pure functions: stored text in, one `sources` row and its `turns` out. Unknown line types and blocks are counted and skipped, never fatal, because the raw copy stays in the store.
@@ -162,7 +170,7 @@ When Ollama cannot be reached, search returns the keyword results and says so. I
 ## Known gaps
 
 - Pruning superseded transcript copies, and clean-up of `.tmp` files (#20).
-- A per-session `#nobrain` opt-out (#22).
+- The opt-out marker is read in Claude Code sessions only. A claude.ai conversation cannot opt out yet (no marker is read in exports).
 - Files nested inside artifact bundles are not ingested (15 entries in the current export).
 - `queued_command` attachments (a prompt typed while Claude was busy) are skipped. Most of them also appear later as a user line, but not all of them.
 - Code pasted without fences can come out as `mixed`.
@@ -182,4 +190,5 @@ When Ollama cannot be reached, search returns the keyword results and says so. I
 | WP5 claude.ai export | #23 | `cai@2`: five kinds, all branches, structure-based recognition, HTML as text, final scrub in `writeSource`. |
 | WP6 turn enrichment | #24 | `enrich@1`: injected flags and split-off `#injected` turns, hook context stored, per-turn language. |
 | WP7 hybrid index | #25 | Schema v4 (`chunks`, `chunks_vec`; `turns_vec` dropped). Chunks with context headers, BGE-M3 Q8_0 via Ollama, incremental `brain index`, `brain search` with RRF k = 60. |
-| WP8 local MCP | this PR | `brain mcp` over stdio: `search_evidence` (kind and date filters in both indexes) and `open_evidence` (tree walk, size caps). |
+| WP8 local MCP | #26 | `brain mcp` over stdio: `search_evidence` (kind and date filters in both indexes) and `open_evidence` (tree walk, size caps). |
+| Session opt-out | this PR | Schema v5 (`opt_outs`). `#nobrain` alone on a line of a user message: the session and its folder are never stored, and earlier copies are purged. |

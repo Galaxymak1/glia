@@ -10,6 +10,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createMcpServer } from "./mcp.js";
 import { buildIndex, indexStatus } from "./vectors.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
+import { isOptedOut, OPT_OUT_MARKER, OptOutCheck, optOut, sessionOf } from "./optOut.js";
 import { isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
 import { indexClaudeCodeFile } from "./sources.js";
 import { ingestExportZip, mayBeExportFile } from "./claudeAiExport.js";
@@ -23,7 +24,9 @@ Commands:
   init                          Create the database, or apply pending migrations
   scrub --dry-run [path...]     Report the secrets scrubbing would remove (default: ~/.claude/projects)
   ingest <path...>              Scrub and store raw files, then parse Claude Code transcripts and
-                                memory, and claude.ai export ZIPs, into sources and turns (idempotent)
+                                memory, and claude.ai export ZIPs, into sources and turns (idempotent).
+                                A session with a line holding only #nobrain, typed by the user, is
+                                never stored, nor its folder; earlier copies are purged
   index [--rebuild]             Embed new and changed turns into the meaning index (Ollama); --rebuild
                                 deletes the index and embeds everything again
   search <query...>             Hybrid keyword + meaning search over turns
@@ -62,6 +65,10 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
     const store = new EvidenceStore(db, rawDirFor(dbPath));
     let created = 0, repaired = 0, unchanged = 0, skipped = 0, symlinks = 0, excluded = 0, failed = 0, bytes = 0, storedBytes = 0, redactions = 0;
     const parsed = { session: 0, subagent: 0, memory: 0 };
+    const optOutCheck = new OptOutCheck(db);
+    const optedOut = new Set<string>();
+    const purged = { sources: 0, rawFiles: 0 };
+    let optedOutFiles = 0;
     let parsedUnchanged = 0, turnsWritten = 0, turnsRemoved = 0, malformed = 0;
     const skippedTypes: Record<string, number> = {};
     const exportTotals = { zips: 0, turnsWritten: 0, turnsRemoved: 0 };
@@ -144,6 +151,19 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           fail(fsError(path, err));
           continue;
         }
+        // A session the user opted out of (#nobrain) is not stored, nor its folder; what was
+        // stored before the marker was typed is purged once.
+        const ses = sessionOf(view(path));
+        if (ses && optOutCheck.isOptedOut(ses.sessionId, path, ses.isTranscript ? data : undefined)) {
+          if (!optedOut.has(ses.sessionId) && !isOptedOut(db, ses.sessionId)) {
+            const p = optOut(db, rawDirFor(dbPath), ses.sessionId);
+            purged.sources += p.sources;
+            purged.rawFiles += p.rawFiles;
+          }
+          optedOut.add(ses.sessionId);
+          optedOutFiles++;
+          continue;
+        }
         try {
           const r = store.put(path, data);
           if (r.created) {
@@ -194,7 +214,13 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           (left.length ? `; entries not ingested: ${left.join(", ")}` : ""),
       );
     }
-    const types = Object.entries(skippedTypes).sort((a, b) => b[1] - a[1]);
+    if (optedOut.size) {
+      console.log(
+        `${optedOut.size} sessions opted out (${OPT_OUT_MARKER}): ${optedOutFiles} files not stored` +
+          (purged.sources || purged.rawFiles ? `; purged ${purged.sources} sources and ${purged.rawFiles} raw files stored earlier` : ""),
+      );
+    }
+        const types = Object.entries(skippedTypes).sort((a, b) => b[1] - a[1]);
     if (types.length) console.log(`Skipped non-turn lines: ${types.map(([t, n]) => `${t} ${n}`).join(", ")}`);
     return failed ? 1 : 0;
   } finally {
