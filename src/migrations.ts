@@ -215,6 +215,42 @@ export const migrations: Migration[] = [
       CREATE INDEX sources_raw_sha256 ON sources (raw_sha256);
     `,
   },
+  {
+    version: 7,
+    name: "evaluation runs",
+    sql: `
+      -- One row per brain eval run (#10, SPEC.md "Evaluation"), and one result per question and
+      -- arm (A: claude.ai chat search, asked by hand; B: claude -p with the local MCP tools).
+      -- Each result keeps the question as it was asked, so later edits to the set leave old runs readable.
+      CREATE TABLE eval_runs (
+        id               INTEGER PRIMARY KEY,
+        started_at       TEXT    NOT NULL,
+        finished_at      TEXT,
+        questions_sha256 TEXT    NOT NULL,
+        questions        INTEGER NOT NULL,
+        model            TEXT    NOT NULL,
+        judge_model      TEXT    NOT NULL,
+        base_url         TEXT
+      );
+      CREATE TABLE eval_results (
+        run_id       INTEGER NOT NULL REFERENCES eval_runs (id) ON DELETE CASCADE,
+        question_id  TEXT    NOT NULL,
+        arm          TEXT    NOT NULL CHECK (arm IN ('A', 'B')),
+        category     TEXT    NOT NULL,
+        location     TEXT    NOT NULL CHECK (location IN ('cai', 'cc', 'both')),
+        question     TEXT    NOT NULL,
+        reference    TEXT    NOT NULL,
+        answer       TEXT,
+        verdict      TEXT    NOT NULL CHECK (verdict IN ('correct', 'incorrect', 'error')),
+        reason       TEXT,
+        hit_at_8     INTEGER CHECK (hit_at_8 IN (0, 1)),
+        searches     TEXT,
+        hand_verdict TEXT    CHECK (hand_verdict IN ('correct', 'incorrect')),
+        seconds      REAL,
+        PRIMARY KEY (run_id, question_id, arm)
+      );
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {
