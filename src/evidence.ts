@@ -20,6 +20,8 @@ export interface RawFile {
   redactions: number;
   scrubber_version: string;
   received_at: string;
+  /** Set when the copy was pruned as superseded (#20): the file is gone, the row stays. */
+  pruned_at: string | null;
 }
 
 export interface PutResult {
@@ -28,6 +30,8 @@ export interface PutResult {
   created: boolean;
   /** True when the content was known but its stored copy was missing or damaged, and was rewritten. */
   repaired: boolean;
+  /** True when this content is a pruned, superseded copy: nothing was stored, and it is not to be parsed. */
+  pruned?: boolean;
 }
 
 const sha256 = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
@@ -68,10 +72,17 @@ export class EvidenceStore {
   put(originPath: string, data: Buffer, receivedAt = new Date()): PutResult {
     const sha = sha256(data);
     const existing = this.get(sha);
-    if (existing && this.isIntact(existing)) return { file: existing, created: false, repaired: false };
-
     // A file name can hold a secret too; it is stored and reported scrubbed.
     const origin = scrubPath(originPath);
+    if (existing?.pruned_at) {
+      this.addOrigin(sha, origin, receivedAt);
+      return { file: existing, created: false, repaired: false, pruned: true };
+    }
+    if (existing && this.isIntact(existing)) {
+      this.addOrigin(sha, origin, receivedAt);
+      return { file: existing, created: false, repaired: false };
+    }
+
     if (data.includes(0)) throw new Error(`${origin}: binary content, not stored`);
     const text = data.toString("utf8");
     if (!Buffer.from(text, "utf8").equals(data)) throw new Error(`${origin}: not valid UTF-8, not stored`);
@@ -90,6 +101,7 @@ export class EvidenceStore {
       this.db
         .prepare("UPDATE raw_files SET stored_sha256 = ?, stored_bytes = ?, redactions = ?, scrubber_version = ? WHERE sha256 = ?")
         .run(sha256(scrubbed.value), gz.length, scrubbed.findings.length, SCRUBBER_VERSION, sha);
+      this.addOrigin(sha, origin, receivedAt);
       return { file: this.get(sha)!, created: false, repaired: true };
     }
 
@@ -103,6 +115,7 @@ export class EvidenceStore {
       redactions: scrubbed.findings.length,
       scrubber_version: SCRUBBER_VERSION,
       received_at: receivedAt.toISOString(),
+      pruned_at: null,
     };
     // OR IGNORE: a concurrent ingest of the same content may have won the race; its
     // file has the same name and the same content, so either copy is correct.
@@ -113,7 +126,24 @@ export class EvidenceStore {
          VALUES (@sha256, @stored_path, @stored_sha256, @origin_path, @bytes, @stored_bytes, @redactions, @scrubber_version, @received_at)`,
       )
       .run(file);
+    this.addOrigin(sha, origin, receivedAt);
     return changes ? { file, created: true, repaired: false } : { file: this.get(sha)!, created: false, repaired: false };
+  }
+
+  /** Records one more path the content was read from; the first sighting of each path is kept. */
+  private addOrigin(sha: string, origin: string, seen: Date): void {
+    this.db.prepare("INSERT OR IGNORE INTO raw_file_origins (sha256, origin_path, first_seen) VALUES (?, ?, ?)").run(sha, origin, seen.toISOString());
+  }
+
+  /**
+   * Deletes a stored copy and keeps its row, marked pruned. The file goes first: a failed delete
+   * leaves the row as it was, and a crash in between leaves a row whose copy the next put repairs.
+   */
+  prune(sha: string, now = new Date()): void {
+    const file = this.get(sha);
+    if (!file || file.pruned_at) return;
+    rmSync(join(this.rawDir, file.stored_path), { force: true });
+    this.db.prepare("UPDATE raw_files SET pruned_at = ? WHERE sha256 = ?").run(now.toISOString(), sha);
   }
 
   /** Whether the stored copy exists and still matches its recorded hash. */
@@ -129,6 +159,7 @@ export class EvidenceStore {
   read(sha: string): string {
     const file = this.get(sha);
     if (!file) throw new Error(`no raw file ${sha}`);
+    if (file.pruned_at) throw new Error(`raw file ${sha} was pruned as a superseded copy`);
     const path = join(this.rawDir, file.stored_path);
     const text = gunzipSync(readFileSync(path)).toString("utf8");
     if (sha256(text) !== file.stored_sha256) throw new Error(`${relative(process.cwd(), path)}: content does not match its stored hash`);
