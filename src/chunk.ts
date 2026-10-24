@@ -34,13 +34,19 @@ export function chunkText(text: string, size = CHUNK_CHARS, overlap = OVERLAP_CH
   let start = 0;
   for (;;) {
     if (t.length - start <= size) {
-      chunks.push(t.slice(start).trim());
+      push(chunks, t.slice(start));
       return chunks;
     }
     const end = cutBefore(t, start + Math.floor(size / 2), start + size);
-    chunks.push(t.slice(start, end).trim());
+    push(chunks, t.slice(start, end));
     start = nextStart(t, Math.max(end - overlap, start + 1), end);
   }
+}
+
+/** A window inside a long run of blanks holds nothing to embed. */
+function push(chunks: string[], piece: string): void {
+  const p = piece.trim();
+  if (p) chunks.push(p);
 }
 
 /** Where to cut a window that may end anywhere in `[min, limit]`. */

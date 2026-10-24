@@ -37,6 +37,11 @@ describe("chunkText", () => {
     expect(chunkText(sentence)[0]!.endsWith("end.")).toBe(true);
   });
 
+  it("never yields an empty chunk from a long run of blanks", () => {
+    expect(chunkText(`a${" ".repeat(3000)}b`)).toEqual(["a", "b"]);
+    expect(chunkText(`a${"\n".repeat(5000)}b`)).toEqual(["a", "b"]);
+  });
+
   it("cuts a text with no break at the limit, never inside a surrogate pair", () => {
     const hash = "x".repeat(CHUNK_CHARS - 1) + "😀".repeat(10);
     const chunks = chunkText(hash);
