@@ -60,7 +60,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
   try {
     migrate(db);
     const store = new EvidenceStore(db, rawDirFor(dbPath));
-    let created = 0, repaired = 0, unchanged = 0, skipped = 0, excluded = 0, failed = 0, bytes = 0, storedBytes = 0, redactions = 0;
+    let created = 0, repaired = 0, unchanged = 0, skipped = 0, symlinks = 0, excluded = 0, failed = 0, bytes = 0, storedBytes = 0, redactions = 0;
     const parsed = { session: 0, subagent: 0, memory: 0 };
     let parsedUnchanged = 0, turnsWritten = 0, turnsRemoved = 0, malformed = 0;
     const skippedTypes: Record<string, number> = {};
@@ -86,7 +86,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
         fail(fsError(root, err));
         continue;
       }
-      for (const path of walk(root, (p, err) => fail(fsError(p, err)))) {
+      for (const path of walk(root, (p, err) => fail(fsError(p, err)), () => symlinks++)) {
         // Nothing from an excluded project reaches the store, whatever the file (an export ZIP
         // included): checked on every folder from the root down, and on the projects/ view,
         // which names the project.
@@ -174,6 +174,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
         `${unchanged} unchanged; ` +
         (repaired ? `${repaired} repaired; ` : "") +
         `skipped ${skipped} non-text files` +
+        (symlinks ? ` and ${symlinks} symlinks` : "") +
         (excluded ? `; ${excluded} in excluded projects` : "") +
         (failed ? `; ${failed} failed` : ""),
     );
@@ -267,7 +268,14 @@ function mcp(dbPath: string, config: Config): number {
   const handle = serveStdio(() => createMcpServer(db, embedder), {
     onerror: (err) => console.error(`brain mcp: ${err.message}`),
   });
-  process.stdin.once("end", () => void handle.close().finally(() => db.close()));
+  // A search can still be waiting on Ollama when the client leaves: nobody will read its answer,
+  // so exit once the connection is closed instead of keeping the database open for it.
+  process.stdin.once("end", () =>
+    void handle.close().finally(() => {
+      db.close();
+      process.exit(0);
+    }),
+  );
   return 0;
 }
 
