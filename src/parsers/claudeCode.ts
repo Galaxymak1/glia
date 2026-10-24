@@ -4,8 +4,9 @@
 // skipped here is lost.
 
 import { basename, dirname, join, relative } from "node:path";
+import { ENRICH_VERSION, splitInjected } from "../enrich.js";
 
-export const CC_PARSER_VERSION = "cc@2";
+export const CC_PARSER_VERSION = `cc@3+${ENRICH_VERSION}`;
 
 export type ClaudeCodeFile =
   | { kind: "session"; projectDir: string; sessionId: string }
@@ -67,6 +68,7 @@ export interface ParsedTurn {
   ts: string | null;
   text: string;
   isSidechain: boolean;
+  isInjected: boolean;
 }
 
 export interface ParseStats {
@@ -82,6 +84,8 @@ export interface ParseStats {
   malformed: number;
   /** Turn lines repeating a uuid already seen in the file; the last one wins. */
   duplicates: number;
+  /** Turns stored as injected: whole harness messages, hook context, and spans split out of a user's turn. */
+  injected: number;
 }
 
 export interface ParsedSession {
@@ -148,7 +152,7 @@ function messageText(content: unknown, stats: ParseStats): { text: string; onlyT
 
 /** Parses a session or subagent transcript (JSONL, already scrubbed). */
 export function parseSession(text: string): ParsedSession {
-  const stats: ParseStats = { lines: 0, turns: 0, skippedTypes: {}, skippedBlocks: {}, emptyTurns: 0, malformed: 0, duplicates: 0 };
+  const stats: ParseStats = { lines: 0, turns: 0, skippedTypes: {}, skippedBlocks: {}, emptyTurns: 0, malformed: 0, duplicates: 0, injected: 0 };
   // Every line's parent link, turns or not, so a turn's parent can be resolved past skipped lines.
   const parentOf = new Map<string, string | null>();
   const candidates: (ParsedTurn & { rawParent: string | null })[] = [];
@@ -177,8 +181,19 @@ export function parseSession(text: string): ParsedSession {
     if (uuid) parentOf.set(uuid, parent);
     if (type === "ai-title") title = str(d.aiTitle) ?? title;
 
+    // Hook additionalContext reached the model as context: stored, flagged injected. Other
+    // attachments (environment, tool lists, file snapshots) are harness state, not turns.
+    const attachment = type === "attachment" && isObject(d.attachment) ? d.attachment : null;
+    if (attachment?.type === "hook_additional_context" && uuid) {
+      const content = attachment.content;
+      const body = (Array.isArray(content) ? content.map(str).filter(Boolean).join("\n") : (str(content) ?? "")).trim();
+      if (body) {
+        candidates.push({ externalUuid: uuid, parentUuid: null, rawParent: parent, role: "user", ts: str(d.timestamp), text: body, isSidechain: d.isSidechain === true, isInjected: true });
+        continue;
+      }
+    }
     if (type !== "user" && type !== "assistant") {
-      bump(stats.skippedTypes, type);
+      bump(stats.skippedTypes, attachment ? `attachment/${String(attachment.type)}` : type);
       continue;
     }
     if (!uuid || !isObject(d.message)) {
@@ -192,7 +207,7 @@ export function parseSession(text: string): ParsedSession {
       stats.emptyTurns++;
       continue;
     }
-    candidates.push({
+    const turn = {
       externalUuid: uuid,
       parentUuid: null,
       rawParent: parent,
@@ -200,7 +215,22 @@ export function parseSession(text: string): ParsedSession {
       ts: str(d.timestamp),
       text: body,
       isSidechain: d.isSidechain === true,
-    });
+      // Messages the harness wrote in the user's place: skill bodies, compaction summaries, notices.
+      isInjected: type === "user" && (d.isMeta === true || d.isCompactSummary === true),
+    } as const;
+    if (type === "assistant" || turn.isInjected) {
+      candidates.push(turn);
+      continue;
+    }
+    // Reminders inside a user's own message go to a turn of their own, a child of it, so the
+    // user's words stay unflagged and the injected text stays searchable.
+    const { own, injected } = splitInjected(body);
+    if (!injected.length) candidates.push(turn);
+    else if (!own) candidates.push({ ...turn, isInjected: true });
+    else {
+      candidates.push({ ...turn, text: own });
+      candidates.push({ ...turn, externalUuid: `${uuid}#injected`, rawParent: uuid, text: injected.join("\n\n"), isInjected: true });
+    }
   }
 
   // A repeated uuid keeps its last line, like the upsert would.
@@ -209,6 +239,7 @@ export function parseSession(text: string): ParsedSession {
     if (byUuid.has(c.externalUuid)) {
       stats.duplicates++;
       byUuid.delete(c.externalUuid); // re-insert: the kept line takes the later position
+      byUuid.delete(`${c.externalUuid}#injected`); // the replaced line's split-off reminders go with it
     }
     byUuid.set(c.externalUuid, c);
   }
@@ -242,14 +273,15 @@ export function parseSession(text: string): ParsedSession {
     return { ...turn, parentUuid: parent === turn.externalUuid ? null : parent };
   });
   stats.turns = turns.length;
+  stats.injected = turns.filter((t) => t.isInjected).length;
   const times = turns.map((t) => t.ts).filter((t): t is string => !!t).sort();
   return { turns, title, cwd, gitBranch, createdAt: times[0] ?? null, updatedAt: times.at(-1) ?? null, stats };
 }
 
 /** An auto memory file becomes one turn holding the whole file. */
 export function parseMemory(text: string, name: string): ParsedSession {
-  const stats: ParseStats = { lines: 0, turns: 0, skippedTypes: {}, skippedBlocks: {}, emptyTurns: 0, malformed: 0, duplicates: 0 };
-  const turns: ParsedTurn[] = text.trim() ? [{ externalUuid: name, parentUuid: null, role: "memory", ts: null, text, isSidechain: false }] : [];
+  const stats: ParseStats = { lines: 0, turns: 0, skippedTypes: {}, skippedBlocks: {}, emptyTurns: 0, malformed: 0, duplicates: 0, injected: 0 };
+  const turns: ParsedTurn[] = text.trim() ? [{ externalUuid: name, parentUuid: null, role: "memory", ts: null, text, isSidechain: false, isInjected: false }] : [];
   stats.turns = turns.length;
   const title = /^name:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? name;
   return { turns, title, cwd: null, gitBranch: null, createdAt: null, updatedAt: null, stats };
