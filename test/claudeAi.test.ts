@@ -36,10 +36,29 @@ describe("parser", () => {
       ["m1", null, "user", `SQLite or Postgres?\n[attachment notes.txt]\ntoken ${SECRET}`],
       ["m2", "m1", "assistant", 'SQLite.\n[tool_use web_search] {"q":"sqlite"}\n[source] SQLite docs https://sqlite.org\n[image]'],
       ["m4", "m2", "assistant", "Branch A"], // m3 is empty: m4 hangs on m2
+      ["m4#injected", "m4", "assistant", "x"], // injected context: a child turn of its message
       ["m5", "m2", "assistant", "Branch B (regenerated)"],
       ["m6", "m4", "user", "[file] schema.png"],
     ]);
-    expect(stats.skippedBlocks).toEqual({ thinking: 1, injected_prompt_block: 1 });
+    expect(stats.skippedBlocks).toEqual({ thinking: 1 });
+  });
+
+  it("splits claude.ai's injected context from a human message into a flagged child turn", () => {
+    const c = {
+      uuid: "c3", name: "inj", created_at: "2026-10-20", updated_at: "2026-10-20",
+      chat_messages: [
+        msg("h1", ROOT, "human", [{ type: "injected_prompt_block", prompt: "<system-reminder>memory snapshot</system-reminder>" }, { type: "text", text: "Salut, tu te souviens ?" }]),
+        msg("h2", "h1", "human", [{ type: "injected_prompt_block", prompt: "The current date is Friday." }]),
+        msg("a3", "h2", "assistant", [{ type: "text", text: "Oui." }]),
+      ],
+    };
+    const turns = parseConversations([c], { skippedBlocks: {} })[0]!.turns.map((t) => [t.externalUuid, t.parentUuid, t.text, t.isInjected]);
+    expect(turns).toEqual([
+      ["h1", null, "Salut, tu te souviens ?", false],
+      ["h1#injected", "h1", "<system-reminder>memory snapshot</system-reminder>", true],
+      ["h2", "h1", "The current date is Friday.", true], // nothing but injected context: stored whole, flagged
+      ["a3", "h2", "Oui.", false],
+    ]);
   });
 
   it("never makes a message its own parent, directly or through a cycle of empty messages", () => {
@@ -139,7 +158,7 @@ describe("ingestExportZip", () => {
   it("stores and parses kept categories, scrubbed, and never stores account metadata", () => {
     const r = ingestExportZip(db, store, "/x/conversations-000.zip", zip({ "conversations.json": JSON.stringify([conversation()]) }));
     const meta = ingestExportZip(db, store, "/x/light_metadata-000.zip", zip({ "users.json": '[{"email_address":"me@example.com"}]', "login_history.json": '{"login_events":[{"ip_address":"203.0.113.9"}]}' }));
-    expect(r).toMatchObject({ isExport: true, sources: { cai: { new: 1 } }, turnsWritten: 5, errors: [] });
+    expect(r).toMatchObject({ isExport: true, sources: { cai: { new: 1 } }, turnsWritten: 6, errors: [] });
     expect(meta).toMatchObject({ isExport: true, notIngested: { light_metadata: 2 }, sources: {} });
     expect(turnTexts().join("\n")).not.toContain(SECRET);
     expect(turnTexts()[0]).toContain("[REDACTED:github_token]");
@@ -157,7 +176,7 @@ describe("ingestExportZip", () => {
     const older = conversation("2026-10-19T09:00:00Z");
     older.chat_messages = older.chat_messages.slice(0, 1);
     expect(ingestExportZip(db, store, "/x/old.zip", zip({ "conversations.json": JSON.stringify([older]) }))).toMatchObject({ sources: { cai: { older: 1 } }, turnsRemoved: 0 });
-    expect(turnTexts()).toHaveLength(5);
+    expect(turnTexts()).toHaveLength(6);
   });
 
   it("is idempotent, and an older export changes nothing", () => {
@@ -167,7 +186,7 @@ describe("ingestExportZip", () => {
     const older = conversation("2026-10-19T09:00:00Z");
     older.chat_messages = older.chat_messages.slice(0, 1);
     expect(ingestExportZip(db, store, "/x/old.zip", zip({ "conversations.json": JSON.stringify([older]) }))).toMatchObject({ sources: { cai: { older: 1 } }, turnsRemoved: 0 });
-    expect(turnTexts()).toHaveLength(5);
+    expect(turnTexts()).toHaveLength(6);
   });
 
   it("stores an HTML artifact as its visible text, so markup cannot hide a secret from the scrubber", () => {

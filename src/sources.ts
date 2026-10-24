@@ -3,6 +3,7 @@
 
 import type Database from "better-sqlite3";
 import { type Config, isExcludedPath } from "./config.js";
+import { detectLang } from "./enrich.js";
 import { scrubText } from "./scrub.js";
 import type { EvidenceStore, RawFile } from "./evidence.js";
 import { CC_PARSER_VERSION, classifyClaudeCodePath, type ParseStats, parseMemory, parseSession } from "./parsers/claudeCode.js";
@@ -95,6 +96,8 @@ export interface TurnRow {
   ts: string | null;
   text: string;
   isSidechain: boolean;
+  /** Text the harness injected (reminders, hook context), not written by a person: searchable, never extracted. */
+  isInjected?: boolean;
 }
 
 // Prepared once per connection: an export writes thousands of sources.
@@ -117,13 +120,14 @@ function prepare(db: Database.Database) {
          RETURNING id`,
     ),
     upsertTurn: db.prepare(
-      `INSERT INTO turns (source_id, external_uuid, parent_uuid, role, ts, text, is_sidechain)
-       VALUES (@source_id, @external_uuid, @parent_uuid, @role, @ts, @text, @is_sidechain)
+      `INSERT INTO turns (source_id, external_uuid, parent_uuid, role, ts, text, is_sidechain, is_injected, lang)
+       VALUES (@source_id, @external_uuid, @parent_uuid, @role, @ts, @text, @is_sidechain, @is_injected, @lang)
        ON CONFLICT (source_id, external_uuid) DO UPDATE SET
          parent_uuid = excluded.parent_uuid, role = excluded.role, ts = excluded.ts,
-         text = excluded.text, is_sidechain = excluded.is_sidechain
+         text = excluded.text, is_sidechain = excluded.is_sidechain, is_injected = excluded.is_injected, lang = excluded.lang
        WHERE turns.parent_uuid IS NOT excluded.parent_uuid OR turns.role IS NOT excluded.role
-          OR turns.ts IS NOT excluded.ts OR turns.text IS NOT excluded.text OR turns.is_sidechain IS NOT excluded.is_sidechain`,
+          OR turns.ts IS NOT excluded.ts OR turns.text IS NOT excluded.text OR turns.is_sidechain IS NOT excluded.is_sidechain
+          OR turns.is_injected IS NOT excluded.is_injected OR turns.lang IS NOT excluded.lang`,
     ),
     deleteTurns: db.prepare("DELETE FROM turns WHERE source_id = ? AND external_uuid NOT IN (SELECT value FROM json_each(?))"),
   };
@@ -142,7 +146,8 @@ export function findSource(db: Database.Database, kind: SourceRow["kind"], exter
 /**
  * Upserts a source and makes its turns exactly `turns`, in one transaction. Only turns whose
  * content changed are written, so unchanged turns keep their ids, FTS rows and vectors; turns
- * no longer present (a parser change) are removed. Titles, project hints and turn text are scrubbed once
+ * no longer present (a parser change) are removed. Each turn's language is detected here, on
+ * its final text. Titles, project hints and turn text are scrubbed once
  * more here: parsers derive text from stored copies (decoding, joining, stripping markup),
  * which can assemble a secret the scrub of the stored copy could not see.
  */
@@ -163,6 +168,8 @@ export function writeSource(db: Database.Database, source: SourceRow, turns: Tur
         ts: t.ts,
         text: t.text,
         is_sidechain: t.isSidechain ? 1 : 0,
+        is_injected: t.isInjected ? 1 : 0,
+        lang: detectLang(t.text),
       }).changes;
     }
     const keep = JSON.stringify(turns.map((t) => t.externalUuid));
