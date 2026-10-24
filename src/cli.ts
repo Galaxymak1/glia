@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, relative, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
 import { type Config, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
 import { OllamaEmbedder } from "./embed.js";
 import { search } from "./search.js";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createMcpServer } from "./mcp.js";
+import { evalReport, formatEvalReport, parseArmA, readQuestionsFile, runEval, verifyVerdict } from "./eval.js";
 import { buildIndex, indexStatus } from "./vectors.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
 import { pruneSuperseded, removeStaleTmp } from "./prune.js";
@@ -33,6 +34,12 @@ Commands:
                                 deletes the index and embeds everything again
   search <query...>             Hybrid keyword + meaning search over turns
   mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
+  eval run                      Answer every evaluation question with claude -p and the brain tools
+                                (arm B), judge arms A and B against the references, store the run
+  eval report [run]             Scores per category, retrieval hit@8 and the gate (latest run by
+                                default); --details lists every answer and verdict
+  eval verify <run> <q> <A|B> <correct|incorrect>
+                                Record a verdict checked by hand; it overrides Claude's
 
 Options:
   --db <path>   Database file (default: $BRAIN_DB, else ~/.local/share/ai_second_brain/brain.db)
@@ -40,6 +47,10 @@ Options:
   --limit <n>   With search: number of results (default 10)
   --injected    With search: include text the harness injected (reminders, hook context)
   --json        With search: print the results as JSON
+  --questions <path>   With eval run: the question set (default: eval/questions.jsonl next to the database)
+  --arm-a <path>       With eval run: arm A answers (default: eval/arm-a.jsonl next to the database)
+  --model <name>       With eval run: arm B model (default sonnet); --judge-model <name> (default sonnet)
+  --only <ids>         With eval run: only these question ids, comma-separated
 
 Config: $BRAIN_CONFIG, else ~/.config/ai_second_brain/config.json
   {"claudeCode": {"exclude": ["-home-me-work-*"]}}   project folders never stored or parsed
@@ -323,6 +334,57 @@ function mcp(dbPath: string, config: Config): number {
   return 0;
 }
 
+async function evalCommand(
+  dbPath: string,
+  args: string[],
+  values: { questions?: string; "arm-a"?: string; model?: string; "judge-model"?: string; only?: string; details?: boolean },
+): Promise<number> {
+  const [sub, ...rest] = args;
+  const db = openDb(dbPath);
+  try {
+    migrate(db);
+    if (sub === "run") {
+      const evalDir = join(dirname(dbPath), "eval");
+      const questionsPath = values.questions ?? join(evalDir, "questions.jsonl");
+      const { questions: all, sha256 } = readQuestionsFile(questionsPath);
+      const only = values.only?.split(",").map((s) => s.trim());
+      const questions = only ? all.filter((q) => only.includes(q.id)) : all;
+      if (!questions.length) throw new Error(`no questions to run in ${questionsPath}`);
+      const armAPath = values["arm-a"] ?? join(evalDir, "arm-a.jsonl");
+      const armA = existsSync(armAPath) ? parseArmA(readFileSync(armAPath, "utf8")) : new Map<string, string>();
+      if (!armA.size) console.error(`brain: no arm A answers (${armAPath}); the gate's rules 1 and 2 stay undecided`);
+      console.error(`brain: running ${questions.length} questions (arm A answers for ${questions.filter((q) => armA.has(q.id)).length})`);
+      // The same server this CLI runs as `brain mcp`, started the way this process was (node or tsx).
+      const mcpCommand = [process.execPath, ...process.execArgv, process.argv[1]!, "mcp", "--db", resolve(dbPath)];
+      const runId = await runEval(db, {
+        questions,
+        questionsSha256: sha256,
+        armA,
+        model: values.model ?? "sonnet",
+        judgeModel: values["judge-model"] ?? "sonnet",
+        mcpCommand,
+        onProgress: (line) => console.error(`brain: ${line}`),
+      });
+      console.log(formatEvalReport(evalReport(db, runId), false));
+      return 0;
+    }
+    if (sub === "report") {
+      const runId = rest[0] === undefined ? undefined : Number(rest[0]);
+      console.log(formatEvalReport(evalReport(db, runId), values.details ?? false));
+      return 0;
+    }
+    if (sub === "verify" && rest.length === 4 && (rest[2] === "A" || rest[2] === "B") && (rest[3] === "correct" || rest[3] === "incorrect")) {
+      verifyVerdict(db, Number(rest[0]), rest[1]!, rest[2], rest[3]);
+      console.log(`Run ${rest[0]}, ${rest[1]}, arm ${rest[2]}: ${rest[3]} (checked by hand)`);
+      return 0;
+    }
+    console.error(`brain eval needs: run | report [run] | verify <run> <question> <A|B> <correct|incorrect>\n\n${USAGE}`);
+    return 1;
+  } finally {
+    db.close();
+  }
+}
+
 async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -335,6 +397,12 @@ async function main(argv: string[]): Promise<number> {
       limit: { type: "string" },
       injected: { type: "boolean" },
       json: { type: "boolean" },
+      questions: { type: "string" },
+      "arm-a": { type: "string" },
+      model: { type: "string" },
+      "judge-model": { type: "string" },
+      only: { type: "string" },
+      details: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -376,6 +444,8 @@ async function main(argv: string[]): Promise<number> {
     }
     case "mcp":
       return mcp(values.db ?? defaultDbPath(), loadConfig());
+    case "eval":
+      return evalCommand(values.db ?? defaultDbPath(), args, values);
     default:
       console.error(`Unknown command: ${command}\n\n${USAGE}`);
       return 1;

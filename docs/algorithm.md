@@ -194,4 +194,5 @@ When Ollama cannot be reached, search returns the keyword results and says so. I
 | WP7 hybrid index | #25 | Schema v4 (`chunks`, `chunks_vec`; `turns_vec` dropped). Chunks with context headers, BGE-M3 Q8_0 via Ollama, incremental `brain index`, `brain search` with RRF k = 60. |
 | WP8 local MCP | #26 | `brain mcp` over stdio: `search_evidence` (kind and date filters in both indexes) and `open_evidence` (tree walk, size caps). |
 | Session opt-out | #28 | Schema v5 (`opt_outs`). `#nobrain` alone on a line of a user message: the session and its folder are never stored, and earlier copies are purged. |
-| Pruning | this PR | Schema v6 (`raw_files.pruned_at`, `raw_file_origins`). Superseded transcript copies pruned after ingest, stale `.tmp` files removed, opt-out purge matches every origin. |
+| Pruning | #29 | Schema v6 (`raw_files.pruned_at`, `raw_file_origins`). Superseded transcript copies pruned after ingest, stale `.tmp` files removed, opt-out purge matches every origin. |
+| WP10 eval harness | this PR | Schema v7 (`eval_runs`, `eval_results`). `brain eval run/report/verify`; arm B isolated `claude -p` with the brain tools, Claude as judge, hit@8, gate. See `docs/eval.md`. |
