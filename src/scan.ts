@@ -1,6 +1,7 @@
 import { type Dirent, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
+import { scrubPath } from "./evidence.js";
 import { type Finding, type ScrubResult, scrubJsonSource, scrubJsonl, scrubText } from "./scrub.js";
 
 /** Where Claude Code keeps transcripts and auto memory. */
@@ -117,12 +118,13 @@ export function formatReport(report: ScanReport, show: boolean): string {
     const width = Math.max(...[...byKind.keys()].map((k) => k.length));
     for (const [kind, n] of [...byKind].sort((a, b) => b[1] - a[1])) out.push(`  ${kind.padEnd(width)}  ${n}`);
   }
+  // Paths are scrubbed as ingest scrubs them: a file name can hold a secret too.
   if (show && (all.length || report.invalidJson.length)) {
     out.push("", "Findings (masked):");
     for (const file of report.files) {
-      for (const f of file.findings) out.push(`  ${file.path}${f.line ? `:${f.line}` : ""}  ${f.kind}  ${f.preview}`);
+      for (const f of file.findings) out.push(`  ${scrubPath(file.path)}${f.line ? `:${f.line}` : ""}  ${f.kind}  ${f.preview}`);
     }
-    for (const path of report.invalidJson) out.push(`  ${path}  invalid_json`);
+    for (const path of report.invalidJson) out.push(`  ${scrubPath(path)}  invalid_json`);
   }
   return out.join("\n");
 }
