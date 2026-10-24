@@ -15,16 +15,27 @@ Size: the cited turn is cut at 24,000 characters and each neighbour at 2,000. Th
 
 ## Claude Code
 
+Replace `/path/to/ai_second_brain` with the absolute path of your checkout, and run `npm run build` there first. With a wrong path, `node` exits at once. Zed then waits 60 s for an answer and reports a request timeout, and Claude Code reports "Connection closed".
+
 ```sh
 npm run build
 claude mcp add --scope user brain -- node /path/to/ai_second_brain/dist/cli.js mcp
+```
+
+The server reads the default database. For another one, add `--db /path/to/brain.db` after `mcp`. A path where no database exists is created empty, and every search then finds nothing.
+
+To check the command by hand, it should print one JSON line and exit:
+
+```sh
+echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \
+  | node /path/to/ai_second_brain/dist/cli.js mcp
 ```
 
 Without a build, use `npx tsx src/cli.ts mcp` as the command instead (slower start).
 
 ## Zed
 
-In `settings.json` (or Settings → AI → MCP Servers → Add Local Server):
+In `settings.json` (or Settings → AI → MCP Servers → Add Local Server), with the same absolute path:
 
 ```json
 {
