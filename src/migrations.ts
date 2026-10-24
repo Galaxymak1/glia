@@ -195,6 +195,24 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 6,
+    name: "pruned copies and every origin",
+    sql: `
+      -- A transcript copy superseded by a newer one that holds all its lines is pruned (#20): its
+      -- file is deleted and its row kept with pruned_at set, so the same bytes met again are known
+      -- and neither stored nor parsed.
+      ALTER TABLE raw_files ADD COLUMN pruned_at TEXT;
+      -- Every path a raw file was read from, not only the first (raw_files.origin_path).
+      CREATE TABLE raw_file_origins (
+        sha256      TEXT NOT NULL REFERENCES raw_files (sha256) ON DELETE CASCADE,
+        origin_path TEXT NOT NULL,
+        first_seen  TEXT NOT NULL,
+        PRIMARY KEY (sha256, origin_path)
+      );
+      INSERT INTO raw_file_origins (sha256, origin_path, first_seen) SELECT sha256, origin_path, received_at FROM raw_files;
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {
