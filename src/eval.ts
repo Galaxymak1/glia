@@ -87,7 +87,11 @@ export const runClaude: ClaudeRunner = (args, { cwd, timeoutMs }) =>
     let err = "";
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
+    // SIGTERM first; a claude that does not stop within 10 s is killed outright.
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 10_000).unref();
+    }, timeoutMs);
     child.on("error", (e) => {
       clearTimeout(timer);
       reject(e);
@@ -179,6 +183,8 @@ export function parseStream(stdout: string): ArmBResult {
     }
   }
   if (error) throw new Error(error);
+  // No result line (cut off, out of turns) or an empty one is a failed run, not a wrong answer.
+  if (!answer.trim()) throw new Error("claude gave no answer");
   return { answer, searches, opened };
 }
 
@@ -265,7 +271,8 @@ export async function runEval(db: Database.Database, opts: RunOptions, runner: C
       answer: b?.answer ?? null,
       verdict: vb.verdict,
       reason: vb.reason,
-      hit_at_8: b ? (hitAt8(q, b.searches) === null ? null : hitAt8(q, b.searches) ? 1 : 0) : null,
+      // A failed run found nothing: a miss, as it is a wrong answer.
+      hit_at_8: q.sources.length ? (b && hitAt8(q, b.searches) ? 1 : 0) : null,
       searches: b ? JSON.stringify({ searches: b.searches, opened: b.opened }) : null,
       seconds,
     });
@@ -335,18 +342,20 @@ export function evalReport(db: Database.Database, runId?: number): EvalReport {
   const rows = db.prepare("SELECT * FROM eval_results WHERE run_id = ? ORDER BY question_id, arm").all(run.id) as ResultRow[];
   const b = rows.filter((r) => r.arm === "B");
   const a = rows.filter((r) => r.arm === "A");
-  const withA = new Set(a.map((r) => r.question_id));
   const byCategory: EvalReport["byCategory"] = {};
+  // Arm A is claude.ai's search: it is compared on the claude.ai subset only, in rule 1 and rule 2.
+  const aCai = a.filter((r) => r.location !== "cc");
+  const withA = new Set(aCai.map((r) => r.question_id));
   for (const c of CATEGORIES) {
     byCategory[c] = {
-      A: tally(a.filter((r) => r.category === c)),
+      A: tally(aCai.filter((r) => r.category === c)),
       B: tally(b.filter((r) => r.category === c)),
       bWhereA: tally(b.filter((r) => r.category === c && withA.has(r.question_id))),
     };
   }
   const notes: string[] = [];
   const caiB = b.filter((r) => r.location !== "cc" && withA.has(r.question_id));
-  const caiA = a.filter((r) => r.location !== "cc");
+  const caiA = aCai;
   const caiQuestions = b.filter((r) => r.location !== "cc").length;
   let rule1: boolean | null = null;
   if (!caiA.length) notes.push("rule 1 and 2 not decided: no arm A answers");

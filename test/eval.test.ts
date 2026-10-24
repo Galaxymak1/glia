@@ -54,6 +54,7 @@ describe("parsing", () => {
   it("reads the tools' results and the answer from a stream-json transcript", () => {
     expect(parseStream(stream([5, 7, 9], "It was SQLite."))).toEqual({ answer: "It was SQLite.", searches: [[5, 7, 9]], opened: [5] });
     expect(() => parseStream(JSON.stringify({ type: "result", is_error: true, result: "rate limited" }))).toThrow(/rate limited/);
+    expect(() => parseStream(stream([5], "").split("\n").slice(0, -1).join("\n"))).toThrow(/no answer/);
   });
 
   it("counts a hit when a source is in the first 8 of any search", () => {
@@ -109,6 +110,13 @@ describe("runEval and the gate", () => {
     expect(formatEvalReport(open, false)).toContain("=> NOT DECIDED");
   });
 
+  it("compares arm A on the claude.ai subset only", async () => {
+    // An arm A answer to a Claude Code question (q3, which B gets wrong) changes neither rule 1 nor rule 2.
+    const r = evalReport(db, await run({ q1: "right", q2: "wrong", q3: "right" }));
+    expect(r.byCategory.provenance!.A).toEqual({ correct: 0, total: 0 });
+    expect(r.gate).toMatchObject({ rule1: true, rule2: true });
+  });
+
   it("lets a hand verdict override Claude's", async () => {
     const id = await run({});
     verifyVerdict(db, id, "q3", "B", "correct");
@@ -123,7 +131,8 @@ describe("runEval and the gate", () => {
     };
     const id = await runEval(db, { questions: [questions[0]!], questionsSha256: "s", armA: new Map(), model: "m", judgeModel: "j", mcpCommand: ["x"] }, failing);
     const r = evalReport(db, id);
-    expect(r.rows[0]).toMatchObject({ verdict: "error", reason: "arm B failed: claude exited 1: not logged in" });
+    expect(r.rows[0]).toMatchObject({ verdict: "error", reason: "arm B failed: claude exited 1: not logged in", hit_at_8: 0 });
     expect(r.errors).toBe(1);
+    expect(r.hit8).toEqual({ correct: 0, total: 1 });
   });
 });
