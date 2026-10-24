@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_EMBED_MODEL, DEFAULT_OLLAMA_URL } from "./embed.js";
 
 export interface Config {
   claudeCode: {
@@ -11,9 +12,16 @@ export interface Config {
      */
     exclude: string[];
   };
+  /** The Ollama server and model of the meaning index; defaults in `embeddingSettings`. */
+  embedding?: { url?: string; model?: string };
 }
 
 const DEFAULTS: Config = { claudeCode: { exclude: [] } };
+
+/** The embedding server and model, with the defaults filled in. */
+export function embeddingSettings(config: Config): { url: string; model: string } {
+  return { url: config.embedding?.url ?? DEFAULT_OLLAMA_URL, model: config.embedding?.model ?? DEFAULT_EMBED_MODEL };
+}
 
 /** `$BRAIN_CONFIG`, else `$XDG_CONFIG_HOME/ai_second_brain/config.json` (XDG default `~/.config`). */
 export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -34,7 +42,12 @@ export function loadConfig(path = defaultConfigPath()): Config {
   if (!Array.isArray(exclude) || !exclude.every((p) => typeof p === "string")) {
     throw new Error(`${path}: claudeCode.exclude must be a list of strings`);
   }
-  return { claudeCode: { exclude } };
+  const embedding = (raw as { embedding?: unknown })?.embedding ?? {};
+  const { url, model } = embedding as { url?: unknown; model?: unknown };
+  if (typeof embedding !== "object" || [url, model].some((v) => v !== undefined && typeof v !== "string")) {
+    throw new Error(`${path}: embedding.url and embedding.model must be strings`);
+  }
+  return { claudeCode: { exclude }, embedding: { url: url as string | undefined, model: model as string | undefined } };
 }
 
 /** Whether a Claude Code project folder name matches one of the exclusion patterns. */
