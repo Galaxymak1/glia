@@ -57,6 +57,23 @@ describe("brain scrub", () => {
     expect(readFileSync(join(root, "s1.jsonl"), "utf8")).toBe(session + "\n");
   });
 
+  it("reports dropped lines, refused .json files and symlinks apart from secrets", () => {
+    const root = join(dir, "transcripts2", "-home-me-proj");
+    mkdirSync(root, { recursive: true });
+    const secret = "gh" + "p_" + "Y".repeat(36);
+    writeFileSync(join(root, "s1.jsonl"), `{"type":"user"}\n{not json\n`);
+    writeFileSync(join(root, "broken.json"), `{"token": "${secret}"`);
+    symlinkSync(join(root, "s1.jsonl"), join(root, "link.jsonl"));
+    const out = brain("scrub", "--dry-run", "--show", join(dir, "transcripts2"));
+    expect(out).toContain("Scanned 1 files");
+    expect(out).toContain("and 1 symlinks");
+    expect(out).toContain("1 .json files are not valid JSON; ingest would refuse them.");
+    expect(out).toContain("Would drop 1 JSONL lines that are not valid JSON.");
+    expect(out).toContain("Nothing to redact.");
+    expect(out).toMatch(/broken\.json {2}invalid_json/);
+    expect(out).not.toContain(secret);
+  });
+
   it("refuses to run without --dry-run", () => {
     expect(() => brain("scrub", dir)).toThrow(/needs --dry-run/);
   });
