@@ -162,6 +162,15 @@ describe("search", () => {
     expect(top.snippet).toContain("[sqlite]-[vec]");
   });
 
+  it("gives each hit the snippet of its own turn", async () => {
+    const e = new FakeEmbedder();
+    await buildIndex(db, e);
+    const r = await search(db, e, "cat");
+    const byId = new Map(r.hits.map((h) => [h.turnId, h.snippet]));
+    expect(byId.get(idOf("a2"))).toContain("[cat] sleeps on the sofa");
+    expect(r.hits.find((h) => h.snippet.startsWith("Where does the [cat]"))).toBeDefined();
+  });
+
   it("leaves injected turns out unless asked", async () => {
     const e = new FakeEmbedder();
     await buildIndex(db, e);

@@ -233,7 +233,7 @@ async function searchCommand(dbPath: string, config: Config, query: string, limi
   try {
     migrate(db);
     const { url, model } = embeddingSettings(config);
-    const result = await search(db, new OllamaEmbedder(model, url, 30_000), query, { limit, includeInjected });
+    const result = await search(db, new OllamaEmbedder(model, url, 120_000), query, { limit, includeInjected });
     if (result.meaningError) console.error(`brain: meaning search unavailable (${result.meaningError}); keyword results only`);
     const status = indexStatus(db, model);
     if (status.missing) console.error(`brain: ${status.missing} turns are not in the meaning index yet; run: brain index`);

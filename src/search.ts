@@ -123,13 +123,15 @@ export async function search(db: Database.Database, embedder: Embedder | null, q
     `SELECT t.id, t.role, t.ts, t.lang, t.is_injected, t.text, s.kind, s.title
      FROM turns t JOIN sources s ON s.id = t.source_id WHERE t.id = ?`,
   );
+  // rowid bound as BigInt: bound as a JS number (REAL), FTS5 drops the rowid constraint and
+  // returns the first match of the query, whatever the turn.
   const snippet = db.prepare(`SELECT snippet(turns_fts, 0, '[', ']', '…', 24) AS s FROM turns_fts WHERE turns_fts MATCH ? AND rowid = ?`);
   const hits = ranked.map(([id, s]): SearchHit => {
     const t = turn.get(id) as { role: string; ts: string | null; lang: string | null; is_injected: number; text: string; kind: string; title: string | null };
     // The passage that matched: the keyword snippet, else the turn's best chunk.
     const text =
       s.keywordRank !== null && match
-        ? (snippet.get(match, id) as { s: string }).s
+        ? (snippet.get(match, BigInt(id)) as { s: string }).s
         : (chunkText(embedView(t.text))[bestChunk.get(id) ?? 0] ?? t.text);
     return {
       turnId: id,
