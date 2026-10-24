@@ -18,8 +18,8 @@ const brain = (...args: string[]) =>
 describe("brain init", () => {
   it("creates the database, then reports it up to date", () => {
     const db = join(dir, "nested", "brain.db");
-    expect(brain("init", "--db", db)).toBe(`Created ${db} (schema v4)\n`);
-    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v4)\n`);
+    expect(brain("init", "--db", db)).toBe(`Created ${db} (schema v5)\n`);
+    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v5)\n`);
   });
 
   it("rejects an unknown command", () => {
@@ -34,7 +34,7 @@ describe("brain init", () => {
     );
     const created = outs.filter((o) => o.stdout.startsWith("Created")).length;
     expect(created).toBe(1);
-    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v4)\n`);
+    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v5)\n`);
   });
 });
 
