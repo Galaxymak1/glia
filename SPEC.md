@@ -45,7 +45,7 @@ The MVP covers ingestion of all Claude sources, typed claims with provenance and
 | Decision records with rejected options and `revisit_on` | Personality or psychological inferences | Dropped at extraction |
 | Review inbox (MCP App + CLI) with auto-accept policy | Document or web-clip RAG, reading lists | Different product |
 | Secret scrubbing; stripping of injected context before extraction | Multi-user, sharing, org exports | Single user by design |
-| Remote MCP server with single-user OAuth; SessionStart briefing hook; Zed config | Full web app, graph visualisation, mobile app | Phase 4 |
+| Remote MCP server with single-user OAuth; SessionStart briefing hook; Zed config | Full web app, brain map (claims as a neuron graph), mobile app | Phase 4 |
 | Personal evaluation harness with baselines | Local LLM extraction; cross-encoder reranking | Until the evaluation shows a need |
 
 Sessions in client or employer repositories are excluded by default; each project is opted in.
@@ -368,6 +368,8 @@ Phase 0 comes first: cross-silo search over raw evidence plus the evaluation set
 ![roadmap · 5 phases, 4 exit gates](diagrams/roadmap.svg)
 
 If claims never beat raw search on the evaluation set, the project stops at phase 0 and still delivers a searchable record of every Claude conversation.
+
+The brain map in phase 4 draws the store as a network of neurons: each claim is a node, sized by how often it is recalled and faded when superseded; `edges` and shared evidence are the links between them, and sources and scopes form the clusters. It reads the existing tables and adds no new data.
 
 ## Open questions
 
