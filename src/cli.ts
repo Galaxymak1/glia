@@ -21,6 +21,7 @@ import { migrate, schemaVersion } from "./migrations.js";
 import { syncClaims } from "./claimIndex.js";
 import { anthropicBatchClient, planExtraction, pollExtraction, submitExtraction } from "./extractor.js";
 import { formatValidation, validateCandidates } from "./validate.js";
+import { dedupCandidates } from "./dedup.js";
 import { Vault, vaultDirFor } from "./vault.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
@@ -332,6 +333,10 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
         );
         const v = validateCandidates(db);
         if (v.checked) console.log(formatValidation(v));
+        const { url, model } = embeddingSettings(loadConfig());
+        const d = await dedupCandidates(db, new Vault(vaultDirFor(dbPath)), new OllamaEmbedder(model, url));
+        const merged = d.merged.intoClaims + d.merged.intoProposals + d.merged.intoCandidates;
+        if (merged || d.similar) console.log(`Deduplicated: ${merged} merged (${d.merged.intoClaims} into claims, ${d.merged.intoProposals} into proposals), ${d.similar} similar to a claim${d.exactOnly ? "; meaning index unavailable, exact matches only" : ""}`);
         if (!values.wait || !r.running) return 0;
         await new Promise((done) => setTimeout(done, POLL_MS));
       }

@@ -89,6 +89,9 @@ const EN = new Set(
   ).split(" "),
 );
 
+/** A French or English function word ("le", "the", ...): it says how a sentence is built, not what it is about. */
+export const isFunctionWord = (word: string) => FR.has(word) || EN.has(word);
+
 // Code, links and paths say nothing about the language a turn is written in; nor do pasted
 // blocks, tool calls (one `[tool_use <name>] <json>` line each) or attached files, which
 // parsers append after an `[attachment <name>]` line.
