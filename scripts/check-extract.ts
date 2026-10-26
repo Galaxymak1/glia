@@ -122,6 +122,7 @@ const squash = (s: string) => s.replace(/\s+/g, " ").trim();
 
 interface ClaimCheck {
   turnsFound: boolean;
+  noEvidence: boolean;
   quotesVerbatim: number;
   quotesWhitespaceOnly: number;
   quotesMissing: number;
@@ -135,6 +136,7 @@ interface ClaimCheck {
 function checkClaim(claim: ExtractedClaim, byRef: Map<string, TurnRow>): ClaimCheck {
   const check: ClaimCheck = {
     turnsFound: true,
+    noEvidence: claim.evidence.length === 0,
     quotesVerbatim: 0,
     quotesWhitespaceOnly: 0,
     quotesMissing: 0,
@@ -234,7 +236,7 @@ async function main(): Promise<void> {
 
   console.log(`\nresults: ${outPath}\n`);
   console.log(`Outcomes: ${Object.entries(outcomes).map(([k, v]) => `${k} ${v}`).join(", ")}`);
-  console.log(`Claims: ${all.length}; cited turn missing: ${all.filter((c) => !c.turnsFound).length}; user_stated without a user turn: ${all.filter((c) => c.originRoleMismatch).length}`);
+  console.log(`Claims: ${all.length}; no evidence: ${all.filter((c) => c.noEvidence).length}; cited turn missing: ${all.filter((c) => !c.turnsFound).length}; user_stated without a user turn: ${all.filter((c) => c.originRoleMismatch).length}`);
   console.log(`Quotes: ${quotes}; verbatim ${sum((c) => c.quotesVerbatim)}, whitespace differs ${sum((c) => c.quotesWhitespaceOnly)}, not in the turn ${sum((c) => c.quotesMissing)}`);
   console.log(`\n| Sources | n | Claims | Statement in evidence language | Too short to tell |\n| --- | --- | --- | --- | --- |`);
   for (const l of ["fr", "en", "mixed"] as const) console.log(langRow(l));
