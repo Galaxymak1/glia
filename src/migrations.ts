@@ -368,6 +368,20 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 9,
+    name: "extraction state",
+    sql: `
+      -- What each source looked like when it was last sent to extraction (#35): a source is
+      -- selected again only when the hash of its extraction input changes.
+      CREATE TABLE extraction_state (
+        source_id    INTEGER PRIMARY KEY REFERENCES sources (id) ON DELETE CASCADE,
+        input_sha256 TEXT    NOT NULL,
+        job_id       INTEGER NOT NULL,
+        submitted_at TEXT    NOT NULL
+      );
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {
