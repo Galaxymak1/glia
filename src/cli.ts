@@ -23,6 +23,8 @@ import { anthropicBatchClient, planExtraction, pollExtraction, submitExtraction 
 import { formatValidation, validateCandidates } from "./validate.js";
 import { dedupCandidates } from "./dedup.js";
 import { expireProposals, routeCandidates } from "./route.js";
+import { reviewStats, runReview, type ReviewIo } from "./review.js";
+import { createInterface, emitKeypressEvents } from "node:readline";
 import { Vault, vaultDirFor } from "./vault.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
@@ -45,6 +47,10 @@ Commands:
                                 The key is read from ~/.config/ai_second_brain/env (ANTHROPIC_API_KEY)
   extract poll [--wait]         Read finished batches into candidate claims; --wait polls every minute
                                 until no batch is running
+  review [--audit]              Triage the review inbox one key at a time: a accept, e edit, m merge,
+                                r reject, s snooze 7 days, o open the evidence, q quit; --audit shows
+                                the claims picked for audit only
+  review --stats                Weekly rejection rate and median decision time
   search <query...>             Hybrid keyword + meaning search over turns
   mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
   eval run                      Answer every evaluation question with claude -p and the brain tools
@@ -374,6 +380,79 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
   }
 }
 
+/** Single keys from a raw-mode terminal; `ask` drops to a line editor with the text prefilled. */
+function terminalIo(): ReviewIo & { close(): void } {
+  const input = process.stdin;
+  emitKeypressEvents(input);
+  input.setRawMode(true);
+  const queue: string[] = [];
+  let wake: (() => void) | null = null;
+  let asking = false;
+  const onKey = (str: string | undefined, key: { ctrl?: boolean; name?: string }) => {
+    if (asking) return;
+    queue.push(key?.ctrl && key.name === "c" ? "q" : (str ?? ""));
+    wake?.();
+  };
+  input.on("keypress", onKey);
+  return {
+    keys: {
+      async next() {
+        while (!queue.length) await new Promise<void>((done) => (wake = done));
+        return { done: false, value: queue.shift()! };
+      },
+    },
+    async ask(prompt, initial) {
+      asking = true;
+      input.setRawMode(false);
+      const rl = createInterface({ input, output: process.stdout });
+      const answer = await new Promise<string>((done) => {
+        rl.question(prompt, done);
+        rl.write(initial);
+      });
+      rl.close();
+      input.setRawMode(true);
+      asking = false;
+      return answer;
+    },
+    write: (s) => void process.stdout.write(s),
+    close() {
+      input.off("keypress", onKey);
+      input.setRawMode(false);
+      input.pause();
+    },
+  };
+}
+
+async function review(dbPath: string, values: { stats?: boolean; audit?: boolean }): Promise<number> {
+  const db = openDb(dbPath);
+  try {
+    migrate(db);
+    if (values.stats) {
+      const weeks = reviewStats(db);
+      if (!weeks.length) console.log("No review decisions yet.");
+      for (const w of weeks) console.log(`${w.week}: ${w.decided} decided, rejection rate ${Math.round(w.rejectionRate * 100)}%, median ${w.medianSeconds.toFixed(1)} s`);
+      return 0;
+    }
+    if (!process.stdin.isTTY) {
+      console.error("brain review needs a terminal (it reads single keys); --stats works anywhere");
+      return 1;
+    }
+    const vault = new Vault(vaultDirFor(dbPath));
+    await syncClaims(db, vault, null);
+    expireProposals(db, vault);
+    const io = terminalIo();
+    try {
+      const r = await runReview(db, vault, io, () => new Date(), { audit: values.audit });
+      console.log(`\n${r.decided} decided.`);
+    } finally {
+      io.close();
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 async function searchCommand(dbPath: string, config: Config, query: string, limit: number, includeInjected: boolean, json: boolean): Promise<number> {
   const db = openDb(dbPath);
   try {
@@ -484,6 +563,8 @@ async function main(argv: string[]): Promise<number> {
       claims: { type: "boolean" },
       from: { type: "string" },
       wait: { type: "boolean" },
+      stats: { type: "boolean" },
+      audit: { type: "boolean" },
       limit: { type: "string" },
       injected: { type: "boolean" },
       json: { type: "boolean" },
@@ -525,6 +606,8 @@ async function main(argv: string[]): Promise<number> {
     case "index":
       if (values.claims) return indexClaims(values.db ?? defaultDbPath(), loadConfig());
       return index(values.db ?? defaultDbPath(), loadConfig(), values.rebuild ?? false);
+    case "review":
+      return review(values.db ?? defaultDbPath(), values);
     case "extract":
       return extract(values.db ?? defaultDbPath(), args, values);
     case "search": {

@@ -279,3 +279,15 @@ describe("brain extract", () => {
     expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "extract", "--db", dbPath], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "no-xdg") }, stdio: "pipe" })).toThrow(/ai_second_brain\/env: no ANTHROPIC_API_KEY/);
   });
 });
+
+describe("brain review", () => {
+  it("--stats with no decisions says so", () => {
+    expect(brain("review", "--stats", "--db", join(dir, "review", "brain.db"))).toBe("No review decisions yet.\n");
+  });
+
+  it("needs a terminal to triage", () => {
+    expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "review", "--db", join(dir, "review", "brain.db")], { encoding: "utf8", env, stdio: "pipe" })).toThrow(
+      /brain review needs a terminal/,
+    );
+  });
+});

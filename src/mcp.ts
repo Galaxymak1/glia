@@ -107,7 +107,7 @@ export function openEvidence(db: Database.Database, id: number, window = 6) {
   return { source: { ...source }, turns: [...keptBefore, main, ...keptAfter], ...(omitted ? { omittedTurns: omitted } : {}) };
 }
 
-function formatOpen(r: NonNullable<ReturnType<typeof openEvidence>>): string {
+export function formatOpen(r: NonNullable<ReturnType<typeof openEvidence>>): string {
   const s = r.source;
   const head = [`[${s.kind}] ${cut(s.title ?? "(untitled)", TITLE_CHARS).text}`, s.project_hint && `project: ${cut(s.project_hint, TITLE_CHARS).text}`, s.created_at && `created ${s.created_at}`].filter(Boolean).join(" · ");
   const turns = r.turns.map((t) => {
