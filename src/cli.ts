@@ -8,7 +8,7 @@ import { OllamaEmbedder } from "./embed.js";
 import { search } from "./search.js";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createMcpServer } from "./mcp.js";
-import { evalReport, formatEvalReport, parseArmA, readQuestionsFile, runEval, verifyVerdict } from "./eval.js";
+import { evalReport, formatEvalReport, parseArmA, readQuestionsFile, runEval, type ToolArm, verifyVerdict } from "./eval.js";
 import { buildIndex, indexStatus } from "./vectors.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
 import { pruneSuperseded, removeStaleTmp } from "./prune.js";
@@ -24,6 +24,7 @@ import { formatValidation, validateCandidates } from "./validate.js";
 import { dedupCandidates } from "./dedup.js";
 import { expireProposals, routeCandidates } from "./route.js";
 import { reviewStats, runReview, type ReviewIo } from "./review.js";
+import { auditReport, formatAudit, sampleAudit } from "./audit.js";
 import { createInterface, emitKeypressEvents } from "node:readline";
 import { Vault, vaultDirFor } from "./vault.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
@@ -51,13 +52,17 @@ Commands:
                                 r reject, s snooze 7 days, o open the evidence, q quit; --audit shows
                                 the claims picked for audit only
   review --stats                Weekly rejection rate and median decision time
+  audit sample [--n 50]         Open audit items for auto-accepted claims never audited, for the
+                                write-precision audit; triage them with brain review --audit
+  audit report                  Write precision of the audit, AI-origin claims auto-accepted, the gate
   search <query...>             Hybrid keyword + meaning search over turns
   mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
-  eval run                      Answer every evaluation question with claude -p and the brain tools
-                                (arm B), judge arms A and B against the references, store the run
+  eval run [--arms B,C]         Answer every evaluation question with claude -p: arm B with the evidence
+                                tools (raw search), arm C with the claim tools (recall and brief); judge
+                                every arm and arm A against the references, store the run
   eval report [run]             Scores per category, retrieval hit@8 and the gate (latest run by
                                 default); --details lists every answer and verdict
-  eval verify <run> <q> <A|B> <correct|incorrect>
+  eval verify <run> <q> <A|B|C> <correct|incorrect>
                                 Record a verdict checked by hand; it overrides Claude's
 
 Options:
@@ -70,6 +75,7 @@ Options:
   --arm-a <path>       With eval run: arm A answers (default: eval/arm-a.jsonl next to the database)
   --model <name>       With eval run: arm B model (default sonnet); --judge-model <name> (default sonnet)
   --only <ids>         With eval run: only these question ids, comma-separated
+  --arms <list>        With eval run: the tool arms to run (default B,C)
 
 Config: $BRAIN_CONFIG, else ~/.config/ai_second_brain/config.json
   {"claudeCode": {"exclude": ["-home-me-work-*"]}}   project folders never stored or parsed
@@ -453,6 +459,27 @@ async function review(dbPath: string, values: { stats?: boolean; audit?: boolean
   }
 }
 
+function audit(dbPath: string, args: string[], values: { n?: string }): number {
+  const db = openDb(dbPath);
+  try {
+    migrate(db);
+    if (args[0] === "sample") {
+      const n = Number(values.n ?? 50);
+      if (!Number.isInteger(n) || n < 1) throw new Error("--n must be a positive whole number");
+      console.log(`Opened ${sampleAudit(db, new Vault(vaultDirFor(dbPath)), n)} audit items; triage them with: brain review --audit`);
+      return 0;
+    }
+    if (args[0] === "report") {
+      console.log(formatAudit(auditReport(db)));
+      return 0;
+    }
+    console.error(`brain audit needs: sample | report\n\n${USAGE}`);
+    return 1;
+  } finally {
+    db.close();
+  }
+}
+
 async function searchCommand(dbPath: string, config: Config, query: string, limit: number, includeInjected: boolean, json: boolean): Promise<number> {
   const db = openDb(dbPath);
   try {
@@ -503,13 +530,16 @@ function mcp(dbPath: string, config: Config): number {
 async function evalCommand(
   dbPath: string,
   args: string[],
-  values: { questions?: string; "arm-a"?: string; model?: string; "judge-model"?: string; only?: string; details?: boolean },
+  values: { questions?: string; "arm-a"?: string; model?: string; "judge-model"?: string; only?: string; details?: boolean; arms?: string },
 ): Promise<number> {
   const [sub, ...rest] = args;
   const db = openDb(dbPath);
   try {
     migrate(db);
     if (sub === "run") {
+      // Arm C (claims) runs by default next to raw search, so every run shows whether claims help.
+      const arms = (values.arms ?? "B,C").split(",").map((a) => a.trim().toUpperCase());
+      if (!arms.length || !arms.every((a): a is ToolArm => a === "B" || a === "C")) throw new Error("--arms takes B, C or both (B,C)");
       const evalDir = join(dirname(dbPath), "eval");
       const questionsPath = values.questions ?? join(evalDir, "questions.jsonl");
       const { questions: all, sha256 } = readQuestionsFile(questionsPath);
@@ -529,6 +559,7 @@ async function evalCommand(
         model: values.model ?? "sonnet",
         judgeModel: values["judge-model"] ?? "sonnet",
         mcpCommand,
+        arms: [...new Set(arms)] as ToolArm[],
         onProgress: (line) => console.error(`brain: ${line}`),
       });
       console.log(formatEvalReport(evalReport(db, runId), false));
@@ -539,12 +570,12 @@ async function evalCommand(
       console.log(formatEvalReport(evalReport(db, runId), values.details ?? false));
       return 0;
     }
-    if (sub === "verify" && rest.length === 4 && (rest[2] === "A" || rest[2] === "B") && (rest[3] === "correct" || rest[3] === "incorrect")) {
+    if (sub === "verify" && rest.length === 4 && (rest[2] === "A" || rest[2] === "B" || rest[2] === "C") && (rest[3] === "correct" || rest[3] === "incorrect")) {
       verifyVerdict(db, Number(rest[0]), rest[1]!, rest[2], rest[3]);
       console.log(`Run ${rest[0]}, ${rest[1]}, arm ${rest[2]}: ${rest[3]} (checked by hand)`);
       return 0;
     }
-    console.error(`brain eval needs: run | report [run] | verify <run> <question> <A|B> <correct|incorrect>\n\n${USAGE}`);
+    console.error(`brain eval needs: run | report [run] | verify <run> <question> <A|B|C> <correct|incorrect>\n\n${USAGE}`);
     return 1;
   } finally {
     db.close();
@@ -574,6 +605,8 @@ async function main(argv: string[]): Promise<number> {
       "judge-model": { type: "string" },
       only: { type: "string" },
       details: { type: "boolean" },
+      arms: { type: "string" },
+      n: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -606,6 +639,8 @@ async function main(argv: string[]): Promise<number> {
     case "index":
       if (values.claims) return indexClaims(values.db ?? defaultDbPath(), loadConfig());
       return index(values.db ?? defaultDbPath(), loadConfig(), values.rebuild ?? false);
+    case "audit":
+      return audit(values.db ?? defaultDbPath(), args, values);
     case "review":
       return review(values.db ?? defaultDbPath(), values);
     case "extract":

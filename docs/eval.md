@@ -1,4 +1,4 @@
-# Evaluation (WP9, WP10)
+# Evaluation (WP9, WP10, WP19)
 
 The evaluation set and its runs decide whether the local tools beat claude.ai's own chat search (SPEC.md, "Evaluation"). `brain eval` runs the set, Claude judges each answer against its reference, and every run is stored dated in the database.
 
@@ -29,11 +29,13 @@ A question line:
   - its only tools are `search_evidence` and `open_evidence`;
   - no built-in tools, no other MCP server, no user settings or hooks, no CLAUDE.md;
   - no session file, so a run is never ingested back as evidence.
+- **Arm C, `claude -p` with the claim tools.** The same isolation; its only tools are `recall` and `brief`, so it answers from reviewed claims alone (SPEC.md baseline 4). It has no retrieval score: it searches claims, not turns.
 
 ## Running
 
 ```sh
-brain eval run                           # every question; arm B and the judge on sonnet
+brain eval run                           # every question; arms B and C, and the judge, on sonnet
+brain eval run --arms B                  # raw search only
 brain eval run --only q01,q02 --model haiku
 brain eval report                        # latest run: per category, hit@8, gate
 brain eval report 3 --details            # every answer, reference and verdict
@@ -51,3 +53,15 @@ brain eval verify 3 q07 B incorrect      # a verdict checked by hand overrides C
 3. On the Claude Code subset, arm B is right more than half of the time.
 
 On the first run, check every verdict by hand (`brain eval report --details`, then `brain eval verify`).
+
+## Phase 1 gate (#42)
+
+The roadmap's gate: **write precision of 80% or more on a sampled audit, and zero AI-suggested claims auto-accepted.**
+
+```sh
+brain audit sample          # opens 50 audit items for auto-accepted claims never audited
+brain review --audit        # a: right as written · e: right once reworded · r: wrong, retracts the claim
+brain audit report          # precision = kept / judged; an edited claim does not count as kept
+```
+
+`audit report` also counts claims auto-accepted with an origin other than `user_stated` or `user_confirmed`; the gate needs zero. Next to it, `brain eval report` compares arm C with arm B per category, so the owner can see where claims beat raw search before deciding the gate.

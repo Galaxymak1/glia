@@ -412,6 +412,35 @@ export const migrations: Migration[] = [
       CREATE INDEX candidates_state ON candidates (state, id);
     `,
   },
+  {
+    version: 11,
+    name: "evaluation arm C",
+    rebuildsTables: true,
+    sql: `
+      -- Arm C (#42): claude -p with recall and brief, the claims layer. Same columns as v7; only
+      -- the CHECK on arm changes.
+      CREATE TABLE eval_results_v11 (
+        run_id       INTEGER NOT NULL REFERENCES eval_runs (id) ON DELETE CASCADE,
+        question_id  TEXT    NOT NULL,
+        arm          TEXT    NOT NULL CHECK (arm IN ('A', 'B', 'C')),
+        category     TEXT    NOT NULL,
+        location     TEXT    NOT NULL CHECK (location IN ('cai', 'cc', 'both')),
+        question     TEXT    NOT NULL,
+        reference    TEXT    NOT NULL,
+        answer       TEXT,
+        verdict      TEXT    NOT NULL CHECK (verdict IN ('correct', 'incorrect', 'error')),
+        reason       TEXT,
+        hit_at_8     INTEGER CHECK (hit_at_8 IN (0, 1)),
+        searches     TEXT,
+        hand_verdict TEXT    CHECK (hand_verdict IN ('correct', 'incorrect')),
+        seconds      REAL,
+        PRIMARY KEY (run_id, question_id, arm)
+      );
+      INSERT INTO eval_results_v11 SELECT * FROM eval_results;
+      DROP TABLE eval_results;
+      ALTER TABLE eval_results_v11 RENAME TO eval_results;
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {

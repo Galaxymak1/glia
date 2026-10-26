@@ -291,3 +291,20 @@ describe("brain review", () => {
     );
   });
 });
+
+describe("brain audit and eval arms", () => {
+  it("audit report on a fresh brain leaves the gate undecided", () => {
+    const db = join(dir, "audit", "brain.db");
+    expect(brain("audit", "sample", "--db", db)).toBe("Opened 0 audit items; triage them with: brain review --audit\n");
+    expect(brain("audit", "report", "--db", db)).toBe(
+      "Write precision: 0/0 (-); 0 edited, 0 retracted; 0 still open\nAI-origin claims auto-accepted: 0\n" +
+        "Phase 1 gate (precision 80% or more, zero AI-origin auto-accepted): not decided (nothing judged yet)\n",
+    );
+  });
+
+  it("eval run rejects an unknown arm", () => {
+    expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "eval", "run", "--arms", "B,X", "--db", join(dir, "audit", "brain.db")], { encoding: "utf8", env, stdio: "pipe" })).toThrow(
+      /--arms takes B, C or both/,
+    );
+  });
+});

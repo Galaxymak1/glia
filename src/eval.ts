@@ -1,7 +1,8 @@
-// The evaluation harness (#10, SPEC.md "Evaluation"): arm B answers each question with `claude -p`
-// and the local MCP tools only, Claude judges every answer against its reference, and the run is
+// The evaluation harness (#10, #42, SPEC.md "Evaluation"): arm B answers each question with
+// `claude -p` and the evidence tools only (raw search, baseline 3), arm C with the claim tools only
+// (recall and brief, baseline 4). Claude judges every answer against its reference, and the run is
 // stored dated. Arm A (claude.ai's own chat search) is asked by hand; its answers are read from a
-// file and judged the same way. The gate compares the two.
+// file and judged the same way. The Phase 0 gate compares A and B; Phase 1 compares C with B.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -104,6 +105,8 @@ export const runClaude: ClaudeRunner = (args, { cwd, timeoutMs }) =>
   });
 
 const ARM_B_TOOLS = ["mcp__brain__search_evidence", "mcp__brain__open_evidence"];
+const ARM_C_TOOLS = ["mcp__brain__recall", "mcp__brain__brief"];
+export type ToolArm = "B" | "C";
 
 /**
  * Only the brain tools: no built-in tool (no file reads, no shell), no other MCP server, no user
@@ -117,6 +120,16 @@ export function armBPrompt(question: string): string {
     "Answer a question about my own past conversations with Claude (Claude Code sessions, claude.ai chats and projects, memory files).",
     "Use the search_evidence and open_evidence tools: search, trying other wordings or the other language (French or English) when the first search is thin, open the most relevant turns, then answer briefly and specifically, in the language of the question.",
     "When something changed over time, give the latest state and say what it replaced. If the history does not hold the answer, say you could not find it instead of guessing.",
+    "",
+    `Question: ${question}`,
+  ].join("\n");
+}
+
+export function armCPrompt(question: string): string {
+  return [
+    "Answer a question about my own past conversations with Claude, from the facts, preferences and decisions my memory holds about me.",
+    "Use the recall and brief tools: recall with a few wordings or the other language (French or English) when the first is thin, use as_of or include_superseded for questions about the past, then answer briefly and specifically, in the language of the question.",
+    "Each claim says whether I said it or Claude suggested it, and the date it holds from: use both. When something changed over time, give the latest state and say what it replaced. If the memory does not hold the answer, say you could not find it instead of guessing.",
     "",
     `Question: ${question}`,
   ].join("\n");
@@ -218,6 +231,8 @@ export interface RunOptions {
   judgeModel: string;
   /** The command that starts the brain MCP server, as [executable, ...args]. */
   mcpCommand: string[];
+  /** The tool arms to run: B (evidence tools), C (claim tools). Default: B only. */
+  arms?: ToolArm[];
   concurrency?: number;
   timeoutMs?: number;
   onProgress?: (line: string) => void;
@@ -226,7 +241,7 @@ export interface RunOptions {
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 export const questionsSha256 = sha256;
 
-/** Runs every question through arm B, judges both arms, stores the run; returns its id. */
+/** Runs every question through the tool arms, judges them and arm A, stores the run; returns its id. */
 export async function runEval(db: Database.Database, opts: RunOptions, runner: ClaudeRunner = runClaude): Promise<number> {
   const timeoutMs = opts.timeoutMs ?? 300_000;
   const work = mkdtempSync(join(tmpdir(), "brain-eval-"));
@@ -249,40 +264,49 @@ export async function runEval(db: Database.Database, opts: RunOptions, runner: C
       return { verdict: "error" as const, reason: `judge failed: ${err instanceof Error ? err.message : String(err)}` };
     }
   };
-  const one = async (q: Question) => {
+  const arms = opts.arms ?? ["B"];
+  const toolArm = async (arm: ToolArm, q: Question) => {
     const base = { run_id: runId, question_id: q.id, category: q.category, location: q.where, question: q.question, reference: q.reference };
     const started = Date.now();
-    let b: ArmBResult | null = null;
+    let res: ArmBResult | null = null;
     let failure = "";
+    const [prompt, tools] = arm === "B" ? [armBPrompt(q.question), ARM_B_TOOLS] : [armCPrompt(q.question), ARM_C_TOOLS];
     try {
       const stdout = await runner(
-        ["-p", armBPrompt(q.question), "--model", opts.model, ...ISOLATION, "--mcp-config", mcpConfig, "--allowedTools", ARM_B_TOOLS.join(" "), "--output-format", "stream-json", "--verbose"],
+        ["-p", prompt, "--model", opts.model, ...ISOLATION, "--mcp-config", mcpConfig, "--allowedTools", tools.join(" "), "--output-format", "stream-json", "--verbose"],
         { cwd: work, timeoutMs },
       );
-      b = parseStream(stdout);
+      res = parseStream(stdout);
     } catch (err) {
       failure = err instanceof Error ? err.message : String(err);
     }
     const seconds = (Date.now() - started) / 1000;
-    const vb = b ? await judge(q, b.answer) : { verdict: "error" as const, reason: `arm B failed: ${failure}` };
+    const v = res ? await judge(q, res.answer) : { verdict: "error" as const, reason: `arm ${arm} failed: ${failure}` };
     insert.run({
       ...base,
-      arm: "B",
-      answer: b?.answer ?? null,
-      verdict: vb.verdict,
-      reason: vb.reason,
-      // A failed run found nothing: a miss, as it is a wrong answer.
-      hit_at_8: q.sources.length ? (b && hitAt8(q, b.searches) ? 1 : 0) : null,
-      searches: b ? JSON.stringify({ searches: b.searches, opened: b.opened }) : null,
+      arm,
+      answer: res?.answer ?? null,
+      verdict: v.verdict,
+      reason: v.reason,
+      // Retrieval is measured on turns, which only arm B searches. A failed run found nothing: a miss.
+      hit_at_8: arm === "B" && q.sources.length ? (res && hitAt8(q, res.searches) ? 1 : 0) : null,
+      searches: arm === "B" && res ? JSON.stringify({ searches: res.searches, opened: res.opened }) : null,
       seconds,
     });
+    return `${arm} ${v.verdict}`;
+  };
+  const one = async (q: Question) => {
+    const base = { run_id: runId, question_id: q.id, category: q.category, location: q.where, question: q.question, reference: q.reference };
+    const started = Date.now();
+    const done: string[] = [];
+    for (const arm of arms) done.push(await toolArm(arm, q));
     const a = opts.armA.get(q.id);
-    let va: { verdict: string; reason: string } | null = null;
     if (a !== undefined) {
-      va = await judge(q, a);
+      const va = await judge(q, a);
       insert.run({ ...base, arm: "A", answer: a, verdict: va.verdict, reason: va.reason, hit_at_8: null, searches: null, seconds: null });
+      done.push(`A ${va.verdict}`);
     }
-    opts.onProgress?.(`${q.id} [${q.category}] B ${vb.verdict}${va ? `, A ${va.verdict}` : ""} (${seconds.toFixed(0)} s)`);
+    opts.onProgress?.(`${q.id} [${q.category}] ${done.join(", ")} (${((Date.now() - started) / 1000).toFixed(0)} s)`);
   };
   try {
     const queue = [...opts.questions];
@@ -300,7 +324,7 @@ export async function runEval(db: Database.Database, opts: RunOptions, runner: C
 
 interface ResultRow {
   question_id: string;
-  arm: "A" | "B";
+  arm: "A" | "B" | "C";
   category: Category;
   location: Location;
   question: string;
@@ -320,8 +344,9 @@ export interface EvalReport {
   startedAt: string;
   model: string;
   judgeModel: string;
-  byCategory: Record<string, { A: Tally; B: Tally; bWhereA: Tally }>;
+  byCategory: Record<string, { A: Tally; B: Tally; C: Tally; bWhereA: Tally }>;
   armB: Tally;
+  armC: Tally;
   hit8: Tally;
   errors: number;
   unverified: number;
@@ -342,6 +367,7 @@ export function evalReport(db: Database.Database, runId?: number): EvalReport {
   const rows = db.prepare("SELECT * FROM eval_results WHERE run_id = ? ORDER BY question_id, arm").all(run.id) as ResultRow[];
   const b = rows.filter((r) => r.arm === "B");
   const a = rows.filter((r) => r.arm === "A");
+  const c3 = rows.filter((r) => r.arm === "C");
   const byCategory: EvalReport["byCategory"] = {};
   // Arm A is claude.ai's search: it is compared on the claude.ai subset only, in rule 1 and rule 2.
   const aCai = a.filter((r) => r.location !== "cc");
@@ -350,6 +376,7 @@ export function evalReport(db: Database.Database, runId?: number): EvalReport {
     byCategory[c] = {
       A: tally(aCai.filter((r) => r.category === c)),
       B: tally(b.filter((r) => r.category === c)),
+      C: tally(c3.filter((r) => r.category === c)),
       bWhereA: tally(b.filter((r) => r.category === c && withA.has(r.question_id))),
     };
   }
@@ -379,6 +406,7 @@ export function evalReport(db: Database.Database, runId?: number): EvalReport {
     judgeModel: run.judge_model,
     byCategory,
     armB: tally(b),
+    armC: tally(c3),
     hit8: { correct: b.filter((r) => r.hit_at_8 === 1).length, total: b.filter((r) => r.hit_at_8 !== null).length },
     errors: rows.filter((r) => r.verdict === "error" && r.hand_verdict === null).length,
     unverified,
@@ -390,12 +418,13 @@ export function evalReport(db: Database.Database, runId?: number): EvalReport {
 export function formatEvalReport(r: EvalReport, details: boolean): string {
   const pct = (t: Tally) => (t.total ? `${t.correct}/${t.total} (${Math.round((100 * t.correct) / t.total)}%)` : "-");
   const yes = (v: boolean | null) => (v === null ? "not decided" : v ? "met" : "NOT met");
+  const withC = r.armC.total > 0;
   const out = [
     `Evaluation run ${r.runId} · ${r.startedAt.slice(0, 16).replace("T", " ")} · arm B ${r.model}, judge ${r.judgeModel}`,
     "",
-    `${"category".padEnd(18)}  ${"arm B".padEnd(12)}  arm A`,
-    ...CATEGORIES.map((c) => `${c.padEnd(18)}  ${pct(r.byCategory[c]!.B).padEnd(12)}  ${pct(r.byCategory[c]!.A)}`),
-    `${"all".padEnd(18)}  ${pct(r.armB)}`,
+    `${"category".padEnd(18)}  ${"arm B".padEnd(12)}  ${withC ? `${"arm C".padEnd(12)}  ` : ""}arm A`,
+    ...CATEGORIES.map((c) => `${c.padEnd(18)}  ${pct(r.byCategory[c]!.B).padEnd(12)}  ${withC ? `${pct(r.byCategory[c]!.C).padEnd(12)}  ` : ""}${pct(r.byCategory[c]!.A)}`),
+    `${"all".padEnd(18)}  ${pct(r.armB).padEnd(12)}  ${withC ? pct(r.armC) : ""}`.trimEnd(),
     "",
     `Retrieval hit@8 (arm B, questions with sources): ${pct(r.hit8)}`,
     r.errors ? `Errors (counted as wrong): ${r.errors}` : "",
@@ -406,6 +435,17 @@ export function formatEvalReport(r: EvalReport, details: boolean): string {
     `  3. Claude Code subset, B right most of the time: ${yes(r.gate.rule3)}`,
     `  => ${r.gate.pass === null ? "NOT DECIDED" : r.gate.pass ? "PASS" : "FAIL"}`,
     ...r.gate.notes.map((n) => `  note: ${n}`),
+    ...(withC
+      ? [
+          "",
+          `Claims arm (C) against raw search (B), per category: ${CATEGORIES.filter((c) => r.byCategory[c]!.C.total)
+            .map((c) => {
+              const d = r.byCategory[c]!.C.correct - r.byCategory[c]!.B.correct;
+              return `${c} ${d > 0 ? `+${d}` : d}`;
+            })
+            .join(", ")}`,
+        ]
+      : []),
   ].filter((l, i, all) => l !== "" || all[i - 1] !== "");
   if (details) {
     for (const row of r.rows) {
@@ -424,7 +464,7 @@ export function formatEvalReport(r: EvalReport, details: boolean): string {
 }
 
 /** Records a hand-checked verdict; it overrides Claude's in every report of the run. */
-export function verifyVerdict(db: Database.Database, runId: number, questionId: string, arm: "A" | "B", verdict: "correct" | "incorrect"): void {
+export function verifyVerdict(db: Database.Database, runId: number, questionId: string, arm: "A" | "B" | "C", verdict: "correct" | "incorrect"): void {
   const { changes } = db.prepare("UPDATE eval_results SET hand_verdict = ? WHERE run_id = ? AND question_id = ? AND arm = ?").run(verdict, runId, questionId, arm);
   if (!changes) throw new Error(`no result for run ${runId}, question ${questionId}, arm ${arm}`);
 }

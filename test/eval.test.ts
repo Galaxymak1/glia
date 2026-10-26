@@ -95,7 +95,7 @@ describe("runEval and the gate", () => {
     const id = await run({ q1: "right", q2: "wrong" });
     const r = evalReport(db, id);
     expect(r.armB).toEqual({ correct: 4, total: 5 });
-    expect(r.byCategory.temporal).toEqual({ A: { correct: 1, total: 2 }, B: { correct: 2, total: 2 }, bWhereA: { correct: 2, total: 2 } });
+    expect(r.byCategory.temporal).toEqual({ A: { correct: 1, total: 2 }, B: { correct: 2, total: 2 }, C: { correct: 0, total: 0 }, bWhereA: { correct: 2, total: 2 } });
     expect(r.hit8).toEqual({ correct: 4, total: 4 });
     expect(r.gate).toMatchObject({ rule1: true, rule2: true, rule3: true, pass: true });
     expect(r.gate.notes.join(" ")).toContain("7 verdicts not yet checked by hand");
@@ -134,5 +134,51 @@ describe("runEval and the gate", () => {
     expect(r.rows[0]).toMatchObject({ verdict: "error", reason: "arm B failed: claude exited 1: not logged in", hit_at_8: 0 });
     expect(r.errors).toBe(1);
     expect(r.hit8).toEqual({ correct: 0, total: 1 });
+  });
+
+  describe("arm C, claims", () => {
+    // Arm C answers "right" except for q1; it sees recall and brief only.
+    const seen: string[][] = [];
+    const withC: ClaudeRunner = async (args, o) => {
+      if (args.includes("stream-json") && args.join(" ").includes("mcp__brain__recall")) {
+        seen.push(args);
+        const prompt = args[args.indexOf("-p") + 1]!;
+        return stream([], prompt.includes("question q1") ? "wrong" : "right");
+      }
+      return runner(args, o);
+    };
+    const runArms = (arms: ("B" | "C")[]) =>
+      runEval(db, { questions, questionsSha256: "sha", armA: new Map(), model: "m", judgeModel: "j", mcpCommand: ["node", "cli.js", "mcp"], arms }, withC);
+
+    it("arm C runs with recall and brief only", async () => {
+      seen.length = 0;
+      await runArms(["B", "C"]);
+      expect(seen).toHaveLength(5);
+      for (const a of seen) {
+        expect(a[a.indexOf("--allowedTools") + 1]).toBe("mcp__brain__recall mcp__brain__brief");
+        expect(a).toEqual(expect.arrayContaining(["--tools", "", "--strict-mcp-config", "--no-session-persistence"]));
+        expect(a[a.indexOf("-p") + 1]).toContain("recall and brief");
+      }
+    });
+
+    it("without arms, runs arm B only", async () => {
+      seen.length = 0;
+      const id = await run({});
+      expect(seen).toHaveLength(0);
+      expect(evalReport(db, id).armC).toEqual({ correct: 0, total: 0 });
+    });
+
+    it("the report compares arms B and C per category", async () => {
+      const id = await runArms(["B", "C"]);
+      const r = evalReport(db, id);
+      expect(r.armC).toEqual({ correct: 4, total: 5 });
+      expect(r.byCategory.temporal!.C).toEqual({ correct: 1, total: 2 });
+      expect(r.rows.filter((x) => x.arm === "C").every((x) => x.hit_at_8 === null)).toBe(true);
+      const text = formatEvalReport(r, false);
+      expect(text).toMatch(/category\s+arm B\s+arm C\s+arm A/);
+      expect(text).toMatch(/temporal\s+2\/2 \(100%\)\s+1\/2 \(50%\)/);
+      verifyVerdict(db, id, "q1", "C", "correct");
+      expect(evalReport(db, id).armC).toEqual({ correct: 5, total: 5 });
+    });
   });
 });
