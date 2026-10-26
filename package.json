@@ -22,12 +22,14 @@
     "@modelcontextprotocol/server": "~2.3.1",
     "better-sqlite3": "^13.0.3",
     "fflate": "^0.8.3",
+    "js-yaml": "^4.3.2",
     "sqlite-vec": "^0.1.9",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "~2.3.1",
     "@types/better-sqlite3": "^9.6.0",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.20.5",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

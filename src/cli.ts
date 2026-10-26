@@ -18,6 +18,8 @@ import { indexClaudeCodeFile } from "./sources.js";
 import { ingestExportZip, mayBeExportFile } from "./claudeAiExport.js";
 import { scrubText } from "./scrub.js";
 import { migrate, schemaVersion } from "./migrations.js";
+import { syncClaims } from "./claimIndex.js";
+import { Vault, vaultDirFor } from "./vault.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
 const USAGE = `Usage: brain <command> [options]
@@ -32,6 +34,8 @@ Commands:
                                 copies of a transcript that a newer copy holds in full are pruned
   index [--rebuild]             Embed new and changed turns into the meaning index (Ollama); --rebuild
                                 deletes the index and embeds everything again
+  index --claims                Mirror the claim files of the vault into the claim tables and embed
+                                their statements; a file that does not parse is reported and skipped
   search <query...>             Hybrid keyword + meaning search over turns
   mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
   eval run                      Answer every evaluation question with claude -p and the brain tools
@@ -287,6 +291,21 @@ async function index(dbPath: string, config: Config, rebuild: boolean): Promise<
   }
 }
 
+async function indexClaims(dbPath: string, config: Config): Promise<number> {
+  const db = openDb(dbPath);
+  try {
+    migrate(db);
+    const { url, model } = embeddingSettings(config);
+    const r = await syncClaims(db, new Vault(vaultDirFor(dbPath)), new OllamaEmbedder(model, url));
+    console.log(`Claims: ${r.inserted} new, ${r.updated} updated, ${r.removed} removed, ${r.embedded} embedded`);
+    for (const e of r.errors) console.error(`brain: ${scrubText(e).value}`);
+    if (r.embedError) console.error(`brain: meaning index of claims not updated (${r.embedError}); keyword search still finds them`);
+    return r.errors.length ? 1 : 0;
+  } finally {
+    db.close();
+  }
+}
+
 async function searchCommand(dbPath: string, config: Config, query: string, limit: number, includeInjected: boolean, json: boolean): Promise<number> {
   const db = openDb(dbPath);
   try {
@@ -394,6 +413,7 @@ async function main(argv: string[]): Promise<number> {
       "dry-run": { type: "boolean" },
       show: { type: "boolean" },
       rebuild: { type: "boolean" },
+      claims: { type: "boolean" },
       limit: { type: "string" },
       injected: { type: "boolean" },
       json: { type: "boolean" },
@@ -433,6 +453,7 @@ async function main(argv: string[]): Promise<number> {
       }
       return ingest(values.db ?? defaultDbPath(), args, loadConfig());
     case "index":
+      if (values.claims) return indexClaims(values.db ?? defaultDbPath(), loadConfig());
       return index(values.db ?? defaultDbPath(), loadConfig(), values.rebuild ?? false);
     case "search": {
       const limit = Number(values.limit ?? 10);

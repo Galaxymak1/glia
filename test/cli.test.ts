@@ -7,6 +7,11 @@ import { strToU8, zipSync } from "fflate";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { migrations } from "../src/migrations.js";
+import { Vault } from "../src/vault.js";
+import { claimFixture } from "./helpers.js";
+
+const V = migrations.at(-1)!.version;
 
 const dir = mkdtempSync(join(tmpdir(), "brain-cli-"));
 // Never read the developer's own config file.
@@ -18,8 +23,8 @@ const brain = (...args: string[]) =>
 describe("brain init", () => {
   it("creates the database, then reports it up to date", () => {
     const db = join(dir, "nested", "brain.db");
-    expect(brain("init", "--db", db)).toBe(`Created ${db} (schema v7)\n`);
-    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v7)\n`);
+    expect(brain("init", "--db", db)).toBe(`Created ${db} (schema v${V})\n`);
+    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v${V})\n`);
   });
 
   it("rejects an unknown command", () => {
@@ -34,7 +39,7 @@ describe("brain init", () => {
     );
     const created = outs.filter((o) => o.stdout.startsWith("Created")).length;
     expect(created).toBe(1);
-    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v7)\n`);
+    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v${V})\n`);
   });
 });
 
@@ -225,3 +230,27 @@ describe("brain ingest of Claude Code projects", () => {
   });
 });
 
+
+describe("brain index --claims", () => {
+  it("mirrors the vault into the claim tables and reports a broken file", () => {
+    const db = join(dir, "claims", "brain.db");
+    const vault = new Vault(join(dir, "claims", "vault"));
+    vault.writeClaim(claimFixture({ id: "clm_A" }), "a");
+    vault.writeClaim(claimFixture({ id: "clm_B" }), "b");
+    writeFileSync(join(dir, "claims", "vault", "claims", "2026", "clm_C.md"), "broken");
+    // A closed port: the embedder fails at once, and the rows are still indexed.
+    const config = join(dir, "claims-config.json");
+    writeFileSync(config, JSON.stringify({ embedding: { url: "http://127.0.0.1:9" } }));
+    let out = "";
+    try {
+      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "index", "--claims", "--db", db], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config }, stdio: "pipe" });
+    } catch (err) {
+      const e = err as { status: number; stdout: string; stderr: string };
+      expect(e.status).toBe(1);
+      out = e.stdout + e.stderr;
+    }
+    expect(out).toContain("Claims: 2 new, 0 updated, 0 removed, 0 embedded");
+    expect(out).toMatch(/brain: claims\/2026\/clm_C\.md: no frontmatter/);
+    expect(out).toMatch(/brain: meaning index of claims not updated/);
+  });
+});

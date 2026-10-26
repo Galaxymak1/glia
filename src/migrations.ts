@@ -251,6 +251,123 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 8,
+    name: "claim layer",
+    sql: `
+      -- A mirror of the claim files in the vault (#34, SPEC.md "Claim layer"): the files are the
+      -- truth, and these rows are rebuilt from them (src/claimIndex.ts). JSON columns hold the
+      -- frontmatter's lists and objects; extra holds properties added by hand (Obsidian tags).
+      CREATE TABLE claims (
+        n                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        id                   TEXT    NOT NULL UNIQUE,
+        kind                 TEXT    NOT NULL CHECK (kind IN ('profile', 'preference', 'project_fact', 'decision', 'lesson', 'procedure')),
+        scope                TEXT    NOT NULL,
+        statement            TEXT    NOT NULL,
+        statement_lang       TEXT    NOT NULL CHECK (statement_lang IN ('fr', 'en', 'mixed')),
+        origin               TEXT    NOT NULL CHECK (origin IN ('user_stated', 'user_confirmed', 'ai_suggested', 'ai_inferred', 'external_doc', 'imported_memory')),
+        evidence             TEXT    NOT NULL,
+        extractor            TEXT,
+        confidence           REAL    NOT NULL,
+        valid_from           TEXT,
+        valid_from_precision TEXT    NOT NULL CHECK (valid_from_precision IN ('day', 'month', 'year', 'approx', 'unknown')),
+        valid_to             TEXT,
+        recorded_at          TEXT    NOT NULL,
+        supersedes           TEXT    NOT NULL,
+        superseded_by        TEXT,
+        status               TEXT    NOT NULL CHECK (status IN ('proposed', 'active', 'superseded', 'retracted', 'rejected', 'expired')),
+        review               TEXT    NOT NULL CHECK (review IN ('auto_accepted', 'pending', 'approved', 'edited', 'rejected')),
+        reviewed_at          TEXT,
+        sensitivity          TEXT    NOT NULL CHECK (sensitivity IN ('normal', 'sensitive')),
+        options              TEXT,
+        rationale            TEXT,
+        expected_outcome     TEXT,
+        revisit_on           TEXT,
+        extra                TEXT,
+        file_path            TEXT    NOT NULL,
+        file_sha             TEXT    NOT NULL
+      );
+      CREATE INDEX claims_scope_status ON claims (scope, status);
+
+      CREATE VIRTUAL TABLE claims_fts USING fts5 (
+        statement,
+        content = 'claims',
+        content_rowid = 'n',
+        tokenize = 'unicode61 remove_diacritics 2'
+      );
+      CREATE TRIGGER claims_fts_ai AFTER INSERT ON claims BEGIN
+        INSERT INTO claims_fts (rowid, statement) VALUES (new.n, new.statement);
+      END;
+      CREATE TRIGGER claims_fts_ad AFTER DELETE ON claims BEGIN
+        INSERT INTO claims_fts (claims_fts, rowid, statement) VALUES ('delete', old.n, old.statement);
+      END;
+      CREATE TRIGGER claims_fts_au AFTER UPDATE OF statement ON claims BEGIN
+        INSERT INTO claims_fts (claims_fts, rowid, statement) VALUES ('delete', old.n, old.statement);
+        INSERT INTO claims_fts (rowid, statement) VALUES (new.n, new.statement);
+      END;
+
+      -- Bind claim_n and dims as BigInt (see turns_vec in v1). input_sha256 is the hash of the
+      -- statement embedded: an edited statement is embedded again.
+      CREATE VIRTUAL TABLE claims_vec USING vec0 (
+        claim_n      INTEGER PRIMARY KEY,
+        embedding    FLOAT[${EMBEDDING_DIMS}] distance_metric=cosine,
+        model        TEXT,
+        dims         INTEGER,
+        input_sha256 TEXT
+      );
+      CREATE TRIGGER claims_vec_ad AFTER DELETE ON claims BEGIN
+        DELETE FROM claims_vec WHERE claim_n = old.n;
+      END;
+
+      CREATE TABLE edges (
+        src        TEXT NOT NULL,
+        dst        TEXT NOT NULL,
+        type       TEXT NOT NULL CHECK (type IN ('supersedes', 'contradicts', 'refines', 'about', 'derived_from')),
+        valid_from TEXT,
+        valid_to   TEXT,
+        PRIMARY KEY (src, dst, type)
+      );
+
+      -- Which claim was served to which session (#41), so recalled text is known when it comes back.
+      CREATE TABLE retrievals (
+        claim_id    TEXT NOT NULL,
+        client      TEXT NOT NULL,
+        session_ref TEXT,
+        ts          TEXT NOT NULL
+      );
+      CREATE INDEX retrievals_claim ON retrievals (claim_id);
+
+      -- The review inbox (SPEC.md "Review inbox"). A proposed claim lives here, not in the vault,
+      -- until it is accepted; statement_key keeps a rejected statement from coming back.
+      CREATE TABLE proposals (
+        id            TEXT    PRIMARY KEY,
+        kind          TEXT    NOT NULL CHECK (kind IN ('claim', 'decision', 'audit')),
+        claim_id      TEXT    NOT NULL,
+        claim_json    TEXT,
+        statement_key TEXT,
+        reason        TEXT    NOT NULL,
+        similar_to    TEXT,
+        created_at    TEXT    NOT NULL,
+        expires_at    TEXT    NOT NULL,
+        snoozed_until TEXT,
+        shown_at      TEXT,
+        decided_at    TEXT,
+        decision_ms   INTEGER,
+        state         TEXT    NOT NULL CHECK (state IN ('open', 'accepted', 'edited', 'merged', 'rejected', 'expired'))
+      );
+      CREATE INDEX proposals_state ON proposals (state, created_at);
+      CREATE INDEX proposals_statement_key ON proposals (statement_key);
+
+      -- Append-only audit trail, mirrored to log.md in the vault.
+      CREATE TABLE log (
+        ts       TEXT NOT NULL,
+        actor    TEXT NOT NULL,
+        action   TEXT NOT NULL,
+        claim_id TEXT,
+        payload  TEXT
+      );
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {
