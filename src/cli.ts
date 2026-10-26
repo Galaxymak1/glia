@@ -22,6 +22,7 @@ import { syncClaims } from "./claimIndex.js";
 import { anthropicBatchClient, planExtraction, pollExtraction, submitExtraction } from "./extractor.js";
 import { formatValidation, validateCandidates } from "./validate.js";
 import { dedupCandidates } from "./dedup.js";
+import { expireProposals, routeCandidates } from "./route.js";
 import { Vault, vaultDirFor } from "./vault.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
@@ -334,9 +335,18 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
         const v = validateCandidates(db);
         if (v.checked) console.log(formatValidation(v));
         const { url, model } = embeddingSettings(loadConfig());
-        const d = await dedupCandidates(db, new Vault(vaultDirFor(dbPath)), new OllamaEmbedder(model, url));
+        const vault = new Vault(vaultDirFor(dbPath));
+        const d = await dedupCandidates(db, vault, new OllamaEmbedder(model, url));
         const merged = d.merged.intoClaims + d.merged.intoProposals + d.merged.intoCandidates;
         if (merged || d.similar) console.log(`Deduplicated: ${merged} merged (${d.merged.intoClaims} into claims, ${d.merged.intoProposals} into proposals), ${d.similar} similar to a claim${d.exactOnly ? "; meaning index unavailable, exact matches only" : ""}`);
+        const routed = routeCandidates(db, vault);
+        const expired = expireProposals(db, vault);
+        if (routed.accepted || routed.queued || routed.previouslyRejected || expired) {
+          console.log(
+            `Routed: ${routed.accepted} auto-accepted, ${routed.queued} queued (${routed.audits} picked for audit), ${routed.previouslyRejected} previously rejected` +
+              (expired ? `; ${expired} proposals expired` : ""),
+          );
+        }
         if (!values.wait || !r.running) return 0;
         await new Promise((done) => setTimeout(done, POLL_MS));
       }
