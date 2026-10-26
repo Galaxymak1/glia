@@ -3,7 +3,7 @@
 // metrics: rejection rate and median decision time.
 
 import type Database from "better-sqlite3";
-import { claimRow, syncClaims } from "./claimIndex.js";
+import { claimFileSha, claimRow, syncClaimRows } from "./claimIndex.js";
 import { type Claim, ClaimSchema } from "./claims.js";
 import { addEvidence } from "./dedup.js";
 import { formatOpen, openEvidence } from "./mcp.js";
@@ -115,13 +115,16 @@ export function resolveProposal(
 
   if (p.kind === "audit") {
     if (action === "merge") throw new Error("an audit item cannot be merged: accept, edit or reject it");
+    // The file must still be the one indexed: an edit made since in Obsidian is never overwritten.
+    const sha = claimFileSha(db, c.id);
+    if (action !== "accept" && !vault.isUnchanged(c, sha)) throw new Error(`${vault.claimPath(c)} changed on disk since it was indexed; fix it or run: brain index --claims`);
     if (action === "accept") log("audit_ok", c.id);
     else if (action === "edit") {
       log("edit", c.id);
-      vault.writeClaim({ ...c, statement: statement!, review: "edited", reviewed_at: when }, `edit ${c.id} from ${sourcesOf(c)}`);
+      vault.writeClaim({ ...c, statement: statement!, review: "edited", reviewed_at: when }, `edit ${c.id} from ${sourcesOf(c)}`, { expectSha: sha });
     } else {
       log("reject", c.id);
-      vault.writeClaim({ ...c, status: "retracted", review: "rejected", reviewed_at: when }, `retract ${c.id}`);
+      vault.writeClaim({ ...c, status: "retracted", review: "rejected", reviewed_at: when }, `retract ${c.id}`, { expectSha: sha });
     }
     decided(action === "accept" ? "accepted" : action === "edit" ? "edited" : "rejected");
   } else if (action === "accept" || action === "edit") {
@@ -135,15 +138,16 @@ export function resolveProposal(
     const target = claimRow(db, targetId);
     if (!target) throw new Error(`no claim ${targetId} in the vault`);
     const r = addEvidence(target, c.evidence);
+    const sha = claimFileSha(db, targetId);
+    if (r.added && !vault.isUnchanged(target, sha)) throw new Error(`${vault.claimPath(target)} changed on disk since it was indexed; fix it or run: brain index --claims`);
     log("merge", targetId, { from: c.id, added: r.added });
-    if (r.added) vault.writeClaim(r.claim, `evidence ${targetId} from ${sourcesOf(c)}`);
+    if (r.added) vault.writeClaim(r.claim, `evidence ${targetId} from ${sourcesOf(c)}`, { expectSha: sha });
     decided("merged");
   } else {
     log("reject", c.id);
     decided("rejected");
   }
-  // Without an embedder, syncClaims does all its work before it first awaits.
-  void syncClaims(db, vault, null);
+  syncClaimRows(db, vault);
 }
 
 /** ISO 8601 week of a date: 2026-W43. */

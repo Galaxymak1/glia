@@ -4,8 +4,9 @@
 
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
-import { syncClaims } from "./claimIndex.js";
+import { syncClaimRows } from "./claimIndex.js";
 import { type Claim, ClaimSchema, type Evidence, type Origin, statementKey } from "./claims.js";
+import { z } from "zod";
 import { ulid } from "./ulid.js";
 import { appendLog, type Vault } from "./vault.js";
 
@@ -84,13 +85,15 @@ export interface RouteReport {
   queued: number;
   audits: number;
   previouslyRejected: number;
+  /** Candidates that could not become a claim (a blank statement, a bad field): dropped, named in their reason. */
+  invalid: number;
 }
 
 /** Routes every valid candidate. The claim file is committed before its row: a crash in between is closed by the next sync. */
 export function routeCandidates(db: Database.Database, vault: Vault, now = new Date()): RouteReport {
-  const report: RouteReport = { accepted: 0, queued: 0, audits: 0, previouslyRejected: 0 };
+  const report: RouteReport = { accepted: 0, queued: 0, audits: 0, previouslyRejected: 0, invalid: 0 };
   const rows = db
-    .prepare("SELECT id, claim_json, similar_to, model, prompt, batch_id FROM candidates WHERE state = 'valid' ORDER BY id")
+    .prepare("SELECT id, claim_json, similar_to, model, prompt, batch_id FROM candidates WHERE state = 'valid' AND (reason IS NULL OR reason NOT LIKE 'held:%') ORDER BY id")
     .all() as { id: number; claim_json: string; similar_to: string | null; model: string; prompt: string; batch_id: string }[];
   const rejected = db.prepare("SELECT 1 FROM proposals WHERE statement_key = ? AND state = 'rejected' LIMIT 1");
   const setState = db.prepare("UPDATE candidates SET state = ?, reason = ?, claim_id = ? WHERE id = ?");
@@ -110,7 +113,16 @@ export function routeCandidates(db: Database.Database, vault: Vault, now = new D
       continue;
     }
     const route = routeFor({ origin: c.origin, sensitivity: c.sensitivity, kind: c.kind, similar_to: row.similar_to });
-    const claim = toClaim(c, row, now, route.auto);
+    let claim: Claim;
+    try {
+      claim = toClaim(c, row, now, route.auto);
+    } catch (err) {
+      // One bad candidate is dropped, not left to stop every later poll at the same place.
+      const first = err instanceof z.ZodError ? err.issues[0] : undefined;
+      setState.run("dropped", `invalid: ${first ? `${first.path.join(".")}: ${first.message}` : err instanceof Error ? err.message : String(err)}`, null, row.id);
+      report.invalid++;
+      continue;
+    }
     if (route.auto) {
       appendLog(db, vault, { actor: "extractor", action: "auto_accept", claim_id: claim.id, payload: { candidate: row.id, sources: sourcesOf(claim) } }, now);
       vault.writeClaim(claim, `accept ${claim.id} from ${sourcesOf(claim)}: ${cut(claim.statement, 72)}`);
@@ -128,8 +140,7 @@ export function routeCandidates(db: Database.Database, vault: Vault, now = new D
     setState.run("queued", route.reason, claim.id, row.id);
     report.queued++;
   }
-  // Without an embedder, syncClaims does all its work before it first awaits: the rows are written on return.
-  if (report.accepted) void syncClaims(db, vault, null);
+  if (report.accepted) syncClaimRows(db, vault);
   return report;
 }
 

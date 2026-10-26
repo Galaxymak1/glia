@@ -48,7 +48,7 @@ export const ClaimSchema = z.looseObject({
   rationale: z.string().nullable().optional(),
   expected_outcome: z.object({ text: z.string(), confidence: z.number() }).nullable().optional(),
   revisit_on: dateText.nullable().optional(),
-  statement: z.string().min(1),
+  statement: z.string().trim().min(1),
 });
 export type Claim = z.infer<typeof ClaimSchema>;
 

@@ -152,4 +152,28 @@ describe("MCP tools", () => {
     expect(text.length).toBeLessThanOrEqual(RESULT_CHARS);
     expect((text.match(/^\d+\. clm_/gm) ?? []).length).toBe(20);
   });
+
+  it("lists at most 5 evidence entries per claim and stays under the cap with many", async () => {
+    const evidence = Array.from({ length: 400 }, (_, i) => evidenceEntry(`cc:session-${i}`, `turn-${i}`, `q${i}`));
+    await seed(Array.from({ length: 20 }, (_, i) => claimFixture({ id: `clm_${String(i).padStart(2, "0")}`, statement: `SQLite ${"énoncé long ".repeat(150)}${i}.`, evidence })));
+    const text = await call("recall", { query: "SQLite", limit: 20 });
+    expect(text.length).toBeLessThanOrEqual(RESULT_CHARS);
+    expect(text).toContain("(+395 more)");
+  });
 });
+
+describe("MCP server with a vault", () => {
+  it("serves a claim retracted in the vault as retracted, without a reindex", async () => {
+    await seed([B()]);
+    const server = createMcpServer(db, null, vault);
+    const [c, s] = InMemoryTransport.createLinkedPair();
+    await server.connect(s);
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(c);
+    vault.writeClaim({ ...B(), status: "retracted" }, "retract by hand");
+    const r = (await client.callTool({ name: "recall", arguments: { query: "Postgres" } })) as { content: { text: string }[] };
+    expect(r.content[0]!.text).not.toContain("clm_B");
+    await client.close();
+  });
+});
+

@@ -7,7 +7,7 @@ import type Database from "better-sqlite3";
 import { evidenceEntry, type Origin, type Precision } from "./claims.js";
 import { recalledStatements, requestText } from "./extractInput.js";
 
-export type DropReason = "no_evidence" | "unknown_turn" | "quote_not_verbatim" | "personality" | "bad_scope";
+export type DropReason = "empty_statement" | "no_evidence" | "unknown_turn" | "quote_not_verbatim" | "personality" | "bad_scope";
 export type Correction = "origin" | "quote_whitespace" | "valid_from";
 
 /**
@@ -144,6 +144,10 @@ export function validateCandidates(db: Database.Database): ValidationReport {
         drop.run(reason, row.id);
       };
       const evidence = claim.evidence as CandidateEvidence[];
+      if (typeof claim.statement !== "string" || !claim.statement.trim()) {
+        fail("empty_statement");
+        continue;
+      }
       if (!evidence.length) {
         fail("no_evidence");
         continue;

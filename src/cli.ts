@@ -349,13 +349,17 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
         const { url, model } = embeddingSettings(loadConfig());
         const vault = new Vault(vaultDirFor(dbPath));
         const d = await dedupCandidates(db, vault, new OllamaEmbedder(model, url));
+        for (const e of d.syncErrors) console.error(`brain: ${scrubText(e).value}`);
+        if (d.held) console.error(`brain: meaning index unavailable; ${d.held} candidates held until it is back (run: brain extract poll)`);
+        if (d.previouslyRejected) console.log(`${d.previouslyRejected} candidates dropped: a rewording of a statement you rejected`);
         const merged = d.merged.intoClaims + d.merged.intoProposals + d.merged.intoCandidates;
         if (merged || d.similar) console.log(`Deduplicated: ${merged} merged (${d.merged.intoClaims} into claims, ${d.merged.intoProposals} into proposals), ${d.similar} similar to a claim${d.exactOnly ? "; meaning index unavailable, exact matches only" : ""}`);
         const routed = routeCandidates(db, vault);
         const expired = expireProposals(db, vault);
-        if (routed.accepted || routed.queued || routed.previouslyRejected || expired) {
+        if (routed.accepted || routed.queued || routed.previouslyRejected || routed.invalid || expired) {
           console.log(
             `Routed: ${routed.accepted} auto-accepted, ${routed.queued} queued (${routed.audits} picked for audit), ${routed.previouslyRejected} previously rejected` +
+              (routed.invalid ? `, ${routed.invalid} invalid` : "") +
               (expired ? `; ${expired} proposals expired` : ""),
           );
         }
@@ -444,7 +448,7 @@ async function review(dbPath: string, values: { stats?: boolean; audit?: boolean
       return 1;
     }
     const vault = new Vault(vaultDirFor(dbPath));
-    await syncClaims(db, vault, null);
+    for (const e of (await syncClaims(db, vault, null)).errors) console.error(`brain: ${scrubText(e).value}`);
     expireProposals(db, vault);
     const io = terminalIo();
     try {
@@ -513,7 +517,7 @@ function mcp(dbPath: string, config: Config): number {
   migrate(db);
   const { url, model } = embeddingSettings(config);
   const embedder = new OllamaEmbedder(model, url, 120_000);
-  const handle = serveStdio(() => createMcpServer(db, embedder), {
+  const handle = serveStdio(() => createMcpServer(db, embedder, new Vault(vaultDirFor(dbPath))), {
     onerror: (err) => console.error(`brain mcp: ${err.message}`),
   });
   // A search can still be waiting on Ollama when the client leaves: nobody will read its answer,

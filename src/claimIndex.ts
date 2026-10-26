@@ -61,8 +61,20 @@ export interface SyncReport {
   embedError?: string;
 }
 
+/** The SHA-256 of a claim's file when it was last indexed: what Vault.writeClaim expects to find. */
+export function claimFileSha(db: Database.Database, id: string): string | undefined {
+  return (db.prepare("SELECT file_sha FROM claims WHERE id = ?").get(id) as { file_sha: string } | undefined)?.file_sha;
+}
+
 /** Brings the claim tables in line with the vault, then embeds statements whose vector is missing or stale. */
 export async function syncClaims(db: Database.Database, vault: Vault, embedder: Embedder | null): Promise<SyncReport> {
+  const report = syncClaimRows(db, vault);
+  if (embedder) await embedClaims(db, embedder, report);
+  return report;
+}
+
+/** The rows only, no embedding: synchronous, for callers that just wrote a claim. */
+export function syncClaimRows(db: Database.Database, vault: Vault): SyncReport {
   const { entries, errors } = vault.readAll();
   const report: SyncReport = { inserted: 0, updated: 0, removed: 0, embedded: 0, errors };
   // A broken file keeps its claim's last good row: the claim is not lost while it is being fixed.
@@ -104,8 +116,10 @@ export async function syncClaims(db: Database.Database, vault: Vault, embedder: 
       for (const dst of JSON.parse(r.supersedes) as string[]) edge.run(r.id, dst, r.valid_from);
     }
   })();
+  return report;
+}
 
-  if (!embedder) return report;
+async function embedClaims(db: Database.Database, embedder: Embedder, report: SyncReport): Promise<void> {
   // input_sha256 is the hash of the statement embedded; SQLite has no sha256, so compare here.
   const vecSha = new Map(
     (db.prepare("SELECT claim_n, input_sha256, model FROM claims_vec").all() as { claim_n: number; input_sha256: string; model: string }[]).map((r) => [r.claim_n, r]),
@@ -131,5 +145,4 @@ export async function syncClaims(db: Database.Database, vault: Vault, embedder: 
   } catch (err) {
     report.embedError = err instanceof Error ? err.message : String(err);
   }
-  return report;
 }

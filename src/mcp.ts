@@ -8,6 +8,8 @@ import * as z from "zod";
 import type { Embedder } from "./embed.js";
 import { brief, CLAIMS_TAG, logRetrievals, MAX_RECALL_LIMIT, recall, type ClaimHit } from "./recall.js";
 import { search } from "./search.js";
+import { syncClaimRows } from "./claimIndex.js";
+import type { Vault } from "./vault.js";
 import { indexStatus } from "./vectors.js";
 
 export const SOURCE_KINDS = ["cc", "cai", "cap", "cad", "caa", "mem"] as const;
@@ -42,16 +44,30 @@ interface TurnRow {
 
 /** A recalled statement is cut here: 20 of them stay under RESULT_CHARS. */
 const STATEMENT_CHARS = 2_000;
+/** Evidence entries listed per claim; a fact merged from many sessions says how many more it has. */
+const EVIDENCE_SHOWN = 5;
 const scopeSchema = z.string().regex(/^(global|project:.+|context:.+)$/, "global, project:<slug> or context:<tag>");
 
-function formatHits(hits: ClaimHit[], notes: string[]): string {
-  const lines = hits.map((h, i) => {
+/** The claims as text, as many as fit under RESULT_CHARS; returns the ids actually served. */
+function formatHits(hits: ClaimHit[], notes: string[]): { text: string; served: string[] } {
+  const lines: string[] = [];
+  const served: string[] = [];
+  let size = SOURCE_HEADER_CHARS;
+  for (const [i, h] of hits.entries()) {
     const validity = [`as of ${h.as_of}`, h.valid_to && `valid to ${h.valid_to}`, h.status !== "active" && h.status].filter(Boolean).join(" · ");
-    const evidence = h.evidence.map((e) => (e.turn_id === null ? e.source : `turn ${e.turn_id} (${e.source})`)).join(", ");
-    return `${i + 1}. ${h.id} · ${h.kind} · ${h.scope} · ${h.origin} · ${validity}\n   ${cut(h.statement.replace(/\s+/g, " "), STATEMENT_CHARS).text}\n   evidence: ${evidence}`;
-  });
+    const shown = h.evidence.slice(0, EVIDENCE_SHOWN).map((e) => (e.turn_id === null ? e.source : `turn ${e.turn_id} (${cut(e.source, 120).text})`));
+    if (h.evidence.length > EVIDENCE_SHOWN) shown.push(`(+${h.evidence.length - EVIDENCE_SHOWN} more)`);
+    const line = `${i + 1}. ${h.id} · ${h.kind} · ${h.scope} · ${h.origin} · ${validity}\n   ${cut(h.statement.replace(/\s+/g, " "), STATEMENT_CHARS).text}\n   evidence: ${shown.join(", ")}`;
+    if (size + line.length + 1 > RESULT_CHARS) {
+      notes.push(`${hits.length - i} more claims left out to stay under the size cap`);
+      break;
+    }
+    lines.push(line);
+    served.push(h.id);
+    size += line.length + 1;
+  }
   const body = [lines.length ? lines.join("\n") : "No claims match.", ...notes.map((n) => `Note: ${n}`)].join("\n\n");
-  return `<${CLAIMS_TAG}>\n${body}\n</${CLAIMS_TAG}>`;
+  return { text: `<${CLAIMS_TAG}>\n${body}\n</${CLAIMS_TAG}>`, served };
 }
 
 const cut = (text: string, max: number) => (text.length > max ? { text: `${text.slice(0, max)}…`, truncated: true } : { text, truncated: false });
@@ -134,7 +150,12 @@ export function formatOpen(r: NonNullable<ReturnType<typeof openEvidence>>): str
   return `${head}\n\n${turns.join("\n\n")}${tail}`;
 }
 
-export function createMcpServer(db: Database.Database, embedder: Embedder | null): McpServer {
+/**
+ * With a vault, every recall and brief first brings the claim rows in line with its files, so a
+ * claim retracted or corrected in Obsidian is served as it now reads (statements edited since are
+ * found by keyword until the next `brain index --claims` embeds them).
+ */
+export function createMcpServer(db: Database.Database, embedder: Embedder | null, vault?: Vault): McpServer {
   const server = new McpServer({ name: "ai-second-brain", version: "0.0.0" }, { capabilities: { tools: {} } });
 
   server.registerTool(
@@ -215,10 +236,12 @@ export function createMcpServer(db: Database.Database, embedder: Embedder | null
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async (args) => {
+      if (vault) syncClaimRows(db, vault);
       const r = await recall(db, embedder, args);
-      logRetrievals(db, r.hits.map((h) => h.id), client());
       const notes = r.meaningError ? [`meaning search unavailable (${r.meaningError}); keyword results only`] : [];
-      return { content: [{ type: "text", text: formatHits(r.hits, notes) }] };
+      const out = formatHits(r.hits, notes);
+      logRetrievals(db, out.served, client());
+      return { content: [{ type: "text", text: out.text }] };
     },
   );
 
@@ -236,6 +259,7 @@ export function createMcpServer(db: Database.Database, embedder: Embedder | null
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async (args) => {
+      if (vault) syncClaimRows(db, vault);
       const r = brief(db, args);
       logRetrievals(db, r.claimIds, client());
       return { content: [{ type: "text", text: r.text }] };

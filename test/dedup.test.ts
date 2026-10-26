@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { syncClaims } from "../src/claimIndex.js";
 import { evidenceEntry } from "../src/claims.js";
@@ -182,4 +184,45 @@ describe("dedupCandidates", () => {
     expect(r.exactOnly).toBe(true);
     expect(rows().map((x) => [x.state, x.similar_to])).toEqual([["valid", null], ["merged", null]]);
   });
+
+  it("never overwrites a claim whose file is broken: the candidate goes to review instead", async () => {
+    const s = "L'utilisateur utilise SQLite pour l'index du brain.";
+    vault.writeClaim(claimFixture({ id: "clm_A", statement: s }), "a");
+    await syncClaims(db, vault, null);
+    const path = join(vault.dir, "claims/2026/clm_A.md");
+    writeFileSync(path, "kind: mood\nhalf-finished");
+    candidate(s, "s9");
+    const r = await dedupCandidates(db, vault, new VectorEmbedder({ [s]: [1, 0] }));
+    expect(readFileSync(path, "utf8")).toBe("kind: mood\nhalf-finished");
+    expect(rows()[0]).toMatchObject({ state: "valid", similar_to: "clm_A" });
+    expect(r.syncErrors).toEqual([expect.stringMatching(/clm_A\.md/)]);
+  });
+
+  it("embedder down: candidates not merged are held until the meaning index is back", async () => {
+    candidate("The user prefers light mode in the editor.", "s1");
+    const r = await dedupCandidates(db, vault, failingEmbedder);
+    expect(r.held).toBe(1);
+    expect(rows()[0]).toMatchObject({ state: "valid", reason: "held:no_meaning_index" });
+    await dedupCandidates(db, vault, new VectorEmbedder());
+    expect(rows()[0]).toMatchObject({ state: "valid", reason: null });
+  });
+
+  it("embeds in batches, so one large run is not one huge request", async () => {
+    for (let i = 0; i < 70; i++) candidate(`Fait distinct numéro ${i} sur un sujet ${i}.`, "s1");
+    const emb = new VectorEmbedder();
+    await dedupCandidates(db, vault, emb);
+    expect(emb.calls).toBeGreaterThanOrEqual(3);
+  });
+
+  it("a rewording of a rejected statement is dropped as previously rejected", async () => {
+    const a = "L'utilisateur a choisi SQLite pour l'index du brain.";
+    const b = "L'utilisateur utilise SQLite pour l'index du brain.";
+    db.prepare(
+      "INSERT INTO proposals (id, kind, claim_id, claim_json, statement_key, reason, created_at, expires_at, state) VALUES ('prp_r', 'claim', 'clm_R', ?, 'k', 'origin:ai_suggested', 'x', 'y', 'rejected')",
+    ).run(JSON.stringify(claimFixture({ id: "clm_R", statement: a, status: "proposed", review: "pending" })));
+    candidate(b, "s1");
+    await dedupCandidates(db, vault, new VectorEmbedder({ [a]: [1, 0], [b]: [1, 0.2] }));
+    expect(rows()[0]).toMatchObject({ state: "dropped", reason: "previously_rejected" });
+  });
 });
+

@@ -3,7 +3,7 @@
 // of becoming a new one. A near statement that may say something different is left for review.
 
 import type Database from "better-sqlite3";
-import { claimFromRow, syncClaims } from "./claimIndex.js";
+import { claimFileSha, claimFromRow, syncClaims } from "./claimIndex.js";
 import { type Claim, type Evidence, statementKey } from "./claims.js";
 import type { Embedder } from "./embed.js";
 import { isFunctionWord } from "./enrich.js";
@@ -87,10 +87,19 @@ export interface DedupReport {
   evidenceSkipped: number;
   /** The embedder failed: only equal statements were merged, and nothing was marked similar. */
   exactOnly: boolean;
+  /** Candidates kept back from routing until the meaning index is back (exactOnly runs). */
+  held: number;
+  previouslyRejected: number;
+  /** Claim files that did not parse: their claims are not merged into. */
+  syncErrors: string[];
 }
 
+/** Statements embedded per request, as syncClaims does: one large run is never one huge request. */
+const EMBED_BATCH = 32;
+export const HELD = "held:no_meaning_index";
+
 interface Target {
-  kind: "claim" | "proposal" | "candidate";
+  kind: "claim" | "proposal" | "candidate" | "rejected";
   id: string;
   scope: string;
   statement: string;
@@ -99,20 +108,37 @@ interface Target {
 
 /** Merges every valid candidate that repeats a claim, an open proposal or an earlier candidate of this run. */
 export async function dedupCandidates(db: Database.Database, vault: Vault, embedder: Embedder | null): Promise<DedupReport> {
-  const report: DedupReport = { merged: { intoClaims: 0, intoProposals: 0, intoCandidates: 0 }, similar: 0, evidenceSkipped: 0, exactOnly: false };
+  const report: DedupReport = { merged: { intoClaims: 0, intoProposals: 0, intoCandidates: 0 }, similar: 0, evidenceSkipped: 0, exactOnly: false, held: 0, previouslyRejected: 0, syncErrors: [] };
   // Obsidian edits count: claims are compared as their files hold them now.
-  await syncClaims(db, vault, embedder);
+  report.syncErrors = (await syncClaims(db, vault, embedder)).errors;
   const rows = db.prepare("SELECT id, claim_json FROM candidates WHERE state = 'valid' ORDER BY id").all() as { id: number; claim_json: string }[];
   if (!rows.length) return report;
   const proposals = db.prepare("SELECT id, claim_id, claim_json FROM proposals WHERE state = 'open' AND claim_json IS NOT NULL ORDER BY id").all() as { id: string; claim_id: string; claim_json: string }[];
+  // What the user rejected, in any wording close enough to merge: never proposed again.
+  const rejected = db
+    .prepare(
+      `SELECT p.id, COALESCE(json_extract(p.claim_json, '$.statement'), c.statement) AS statement, COALESCE(json_extract(p.claim_json, '$.scope'), c.scope) AS scope
+       FROM proposals p LEFT JOIN claims c ON c.id = p.claim_id WHERE p.state = 'rejected' ORDER BY p.id`,
+    )
+    .all() as { id: string; statement: string | null; scope: string | null }[];
 
   let vectors = new Map<string, Float32Array>();
   if (embedder) {
-    const texts = [...new Set([...rows.map((r) => JSON.parse(r.claim_json).statement as string), ...proposals.map((p) => JSON.parse(p.claim_json).statement as string)])];
+    const texts = [
+      ...new Set([
+        ...rows.map((r) => JSON.parse(r.claim_json).statement as string),
+        ...proposals.map((p) => JSON.parse(p.claim_json).statement as string),
+        ...rejected.flatMap((r) => (r.statement ? [r.statement] : [])),
+      ]),
+    ];
     try {
-      const out = await embedder.embed(texts);
-      vectors = new Map(texts.map((t, i) => [t, out[i]!]));
+      for (let i = 0; i < texts.length; i += EMBED_BATCH) {
+        const batch = texts.slice(i, i + EMBED_BATCH);
+        const out = await embedder.embed(batch);
+        batch.forEach((t, j) => vectors.set(t, out[j]!));
+      }
     } catch {
+      vectors = new Map();
       report.exactOnly = true;
     }
   } else report.exactOnly = true;
@@ -126,6 +152,9 @@ export async function dedupCandidates(db: Database.Database, vault: Vault, embed
     const c = JSON.parse(p.claim_json) as Claim;
     return { kind: "proposal", id: p.id, scope: c.scope, statement: c.statement, vector: vectors.get(c.statement) ?? null };
   });
+  const rejectedTargets: Target[] = rejected.flatMap((r) =>
+    r.statement && r.scope ? [{ kind: "rejected" as const, id: r.id, scope: r.scope, statement: r.statement, vector: vectors.get(r.statement) ?? null }] : [],
+  );
   const kept: Target[] = [];
 
   const setState = db.prepare("UPDATE candidates SET state = ?, claim_id = ?, similar_to = ?, reason = ? WHERE id = ?");
@@ -138,23 +167,37 @@ export async function dedupCandidates(db: Database.Database, vault: Vault, embed
     const judge = (t: Target) => sameFact(cand.statement, t.statement, report.exactOnly || !v || !t.vector ? null : cosine(v, t.vector));
     let merged = false;
     let similarTo: string | null = null;
-    for (const t of [...claimTargets, ...proposalTargets, ...kept]) {
+    for (const t of [...rejectedTargets, ...claimTargets, ...proposalTargets, ...kept]) {
       if (t.scope !== cand.scope) continue;
       const verdict = judge(t);
       if (verdict === "similar" && t.kind === "claim" && !similarTo) similarTo = t.id;
       if (verdict !== "merge") continue;
-      merged = true;
+      if (t.kind === "rejected") {
+        merged = true;
+        setState.run("dropped", null, null, "previously_rejected", row.id);
+        report.previouslyRejected++;
+        break;
+      }
       if (t.kind === "claim") {
         const claim = claimFromRow(db.prepare("SELECT * FROM claims WHERE id = ?").get(t.id) as Record<string, unknown>);
         const r = addEvidence(claim, cand.evidence);
         if (r.added) {
           const sources = [...new Set(cand.evidence.map((e) => e.source))].join(", ");
+          const sha = claimFileSha(db, t.id);
+          // The user is editing that file (or left it broken): it is never overwritten, and the
+          // candidate goes to review next to it instead.
+          if (!vault.isUnchanged(r.claim, sha)) {
+            similarTo = t.id;
+            break;
+          }
           appendLog(db, vault, { actor: "extractor", action: "add_evidence", claim_id: t.id, payload: { candidate: row.id, sources } });
-          vault.writeClaim(r.claim, `evidence ${t.id} from ${sources}`);
+          vault.writeClaim(r.claim, `evidence ${t.id} from ${sources}`, { expectSha: sha });
         } else report.evidenceSkipped++;
+        merged = true;
         setState.run("merged", t.id, null, `merged:claim`, row.id);
         report.merged.intoClaims++;
       } else if (t.kind === "proposal") {
+        merged = true;
         const p = db.prepare("SELECT claim_id, claim_json FROM proposals WHERE id = ?").get(t.id) as { claim_id: string; claim_json: string };
         const r = addEvidence(JSON.parse(p.claim_json) as Claim, cand.evidence);
         if (r.added) setProposal.run(JSON.stringify(r.claim), t.id);
@@ -162,6 +205,7 @@ export async function dedupCandidates(db: Database.Database, vault: Vault, embed
         setState.run("merged", p.claim_id, null, `merged:proposal:${t.id}`, row.id);
         report.merged.intoProposals++;
       } else {
+        merged = true;
         const first = db.prepare("SELECT claim_json FROM candidates WHERE id = ?").get(Number(t.id)) as { claim_json: string };
         const target = JSON.parse(first.claim_json) as { evidence: CandidateEvidence[] };
         // Kept with its turn ids: the candidate is still on its way to routing.
@@ -174,10 +218,12 @@ export async function dedupCandidates(db: Database.Database, vault: Vault, embed
       break;
     }
     if (merged) continue;
-    if (similarTo) {
-      setState.run("valid", null, similarTo, null, row.id);
-      report.similar++;
-    }
+    // Without the meaning index, a rewording or a contradiction of a claim cannot be seen: the
+    // candidate waits for the next poll instead of being auto-accepted next to it.
+    const held = report.exactOnly ? HELD : null;
+    setState.run("valid", null, similarTo, held, row.id);
+    if (similarTo) report.similar++;
+    if (held) report.held++;
     kept.push({ kind: "candidate", id: String(row.id), scope: cand.scope, statement: cand.statement, vector: v });
   }
   await syncClaims(db, vault, report.exactOnly ? null : embedder);

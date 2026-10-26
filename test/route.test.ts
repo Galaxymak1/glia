@@ -163,3 +163,22 @@ describe("audit and expiry", () => {
     expect(db.prepare("SELECT action FROM log WHERE action = 'expire'").all()).toHaveLength(1);
   });
 });
+
+describe("robustness", () => {
+  it("leaves held candidates for a later poll", () => {
+    const c = candidate();
+    db.prepare("UPDATE candidates SET reason = 'held:no_meaning_index' WHERE id = ?").run(c);
+    expect(routeCandidates(db, vault, NOW)).toMatchObject({ accepted: 0, queued: 0 });
+    expect(cand(c).state).toBe("valid");
+  });
+
+  it("one bad candidate is dropped and does not stop the others", () => {
+    const bad = candidate({ statement: "   " });
+    const good = candidate();
+    const r = routeCandidates(db, vault, NOW);
+    expect(cand(bad)).toMatchObject({ state: "dropped", reason: expect.stringMatching(/^invalid: /) });
+    expect(cand(good).state).toBe("accepted");
+    expect(r).toMatchObject({ accepted: 1, invalid: 1 });
+  });
+});
+

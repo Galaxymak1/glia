@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { claimRow, syncClaims } from "../src/claimIndex.js";
 import { type Claim, evidenceEntry, statementKey } from "../src/claims.js";
@@ -113,6 +115,15 @@ describe("resolveProposal", () => {
     expect(claimRow(db, "clm_A")).toMatchObject({ status: "retracted", review: "rejected" });
     expect(head()).toBe("retract clm_A");
     expect(logActions()).toEqual(["audit_ok", "reject"]);
+  });
+
+  it("audit: never overwrites a claim file edited since it was indexed", () => {
+    const id = propose("audit", { id: "clm_A" });
+    const path = join(vault.dir, "claims/2026/clm_A.md");
+    writeFileSync(path, "half-finished edit");
+    expect(() => resolveProposal(db, vault, id, "reject", opts)).toThrow(/changed on disk/);
+    expect(readFileSync(path, "utf8")).toBe("half-finished edit");
+    expect(prop(id).state).toBe("open");
   });
 
   it("audit: merge is not offered", () => {

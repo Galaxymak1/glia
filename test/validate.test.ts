@@ -114,6 +114,12 @@ describe("validateCandidates", () => {
     expect(row("c1").claim).toMatchObject({ valid_from: "2026-03", valid_from_precision: "month" });
   });
 
+  it("drops a claim with a blank statement", () => {
+    candidate("c1", { statement: "   ", cites: [{ uuid: "u1", quote: "on part sur SQLite" }] });
+    validateCandidates(db);
+    expect(row("c1")).toMatchObject({ state: "dropped", reason: "empty_statement" });
+  });
+
   it("only validates new candidates", () => {
     candidate("c1", { cites: [{ uuid: "u1", quote: "on part sur SQLite" }] });
     validateCandidates(db);

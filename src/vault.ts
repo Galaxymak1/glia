@@ -28,14 +28,20 @@ export class Vault {
     return execFileSync("git", ["-C", this.dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   }
 
-  /** Creates the folder and its repository on first use, with an identity of its own. */
+  /**
+   * The brain's own commits: an identity given per command, so they work with no global git
+   * config and the user's own commits in the vault (obsidian-git) keep their author; and no
+   * signing or hooks from the user's config, which could prompt or fail.
+   */
+  private commit(message: string, paths: string[]): void {
+    this.git("-c", "user.name=brain", "-c", "user.email=brain@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", message, "--", ...paths);
+  }
+
+  /** Creates the folder and its repository on first use. */
   private ensure(): void {
     if (this.ready) return;
     mkdirSync(join(this.dir, "claims"), { recursive: true, mode: 0o700 });
     if (!existsSync(join(this.dir, ".git"))) this.git("init", "-q", "-b", "main");
-    // Local identity: commits work on a machine with no global git config.
-    this.git("config", "user.name", "brain");
-    this.git("config", "user.email", "brain@localhost");
     this.ready = true;
   }
 
@@ -51,10 +57,17 @@ export class Vault {
     return `claims/${c.recorded_at.slice(0, 4)}/${c.id}.md`;
   }
 
-  /** Writes the claim and commits it with log.md; returns the commit. An unchanged file makes no commit. */
-  writeClaim(c: Claim, message: string): string {
+  /**
+   * Writes the claim and commits it with log.md; returns the commit. An unchanged file makes no
+   * commit. With `expectSha`, the file must still hold the bytes it was read from: a file the user
+   * edited since (or left broken) is never overwritten.
+   */
+  writeClaim(c: Claim, message: string, opts: { expectSha?: string } = {}): string {
     this.ensure();
     const rel = this.claimPath(c);
+    if (opts.expectSha !== undefined && !this.isUnchanged(c, opts.expectSha)) {
+      throw new Error(`${rel} changed on disk since it was indexed; fix it or run: brain index --claims`);
+    }
     mkdirSync(dirname(join(this.dir, rel)), { recursive: true });
     writeFileSync(join(this.dir, rel), serializeClaim(c));
     const paths = [rel, ...(existsSync(join(this.dir, "log.md")) ? ["log.md"] : [])];
@@ -66,8 +79,14 @@ export class Vault {
     } catch {
       // exit 1: there is something to commit
     }
-    if (staged) this.git("commit", "-q", "-m", message, "--", ...paths);
+    if (staged) this.commit(message, paths);
     return this.git("rev-parse", "HEAD");
+  }
+
+  /** Whether the claim's file still holds the bytes with this hash (or does not exist yet). */
+  isUnchanged(c: Claim, sha: string | undefined): boolean {
+    const path = join(this.dir, this.claimPath(c));
+    return !existsSync(path) || createHash("sha256").update(readFileSync(path)).digest("hex") === sha;
   }
 
   /** Deletes a claim file without a commit (tests, hand cleanup); the next sync drops its row. */

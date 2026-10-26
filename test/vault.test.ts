@@ -89,4 +89,24 @@ describe("vault", () => {
     expect(entries[0]!.sha).toMatch(/^[0-9a-f]{64}$/);
     expect(errors).toEqual([expect.stringMatching(/^claims\/2026\/clm_Z\.md: /)]);
   });
+
+  it("refuses to overwrite a claim file that changed on disk since it was read", () => {
+    const c = claimFixture({ id: "clm_X" });
+    vault.writeClaim(c, "one");
+    const entry = vault.readAll().entries[0]!;
+    writeFileSync(join(dir, entry.path), "half-finished edit");
+    expect(() => vault.writeClaim({ ...c, confidence: 0.5 }, "two", { expectSha: entry.sha })).toThrow(/changed on disk/);
+    expect(readFileSync(join(dir, entry.path), "utf8")).toBe("half-finished edit");
+  });
+
+  it("commits whatever the user's global git config says, and leaves the vault's config alone", () => {
+    const home = tmpDir("brain-home-");
+    writeFileSync(join(home, ".gitconfig"), "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n[core]\n\thooksPath = /nonexistent\n");
+    process.env.GIT_CONFIG_GLOBAL = join(home, ".gitconfig");
+    const v = new Vault(tmpDir("brain-vault-"));
+    expect(v.writeClaim(claimFixture(), "accept")).toMatch(/^[0-9a-f]{40}$/);
+    expect(git(v.dir, "log", "-1", "--format=%an <%ae>")).toBe("brain <brain@localhost>");
+    expect(readFileSync(join(v.dir, ".git", "config"), "utf8")).not.toContain("brain@localhost");
+  });
 });
+
