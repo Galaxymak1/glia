@@ -254,3 +254,28 @@ describe("brain index --claims", () => {
     expect(out).toMatch(/brain: meaning index of claims not updated/);
   });
 });
+
+describe("brain extract", () => {
+  it("--dry-run reports what would be sent without calling the API", async () => {
+    const dbPath = join(dir, "extract", "brain.db");
+    const { openDb } = await import("../src/db.js");
+    const { migrate } = await import("../src/migrations.js");
+    const { writeSource } = await import("../src/sources.js");
+    const db = openDb(dbPath);
+    migrate(db);
+    writeSource(
+      db,
+      { kind: "cc", external_id: "s1", title: "t", project_hint: null, cwd: null, created_at: null, updated_at: "2026-10-10T00:00:00Z", raw_path: "raw", raw_sha256: "abc", parser_version: "test" },
+      [{ externalUuid: "u1", parentUuid: null, role: "user", ts: "2026-10-01T09:00:00Z", text: "x".repeat(2250), isSidechain: false, isInjected: false }],
+    );
+    db.close();
+    // No env file: a dry run needs no key.
+    const out = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "extract", "--dry-run", "--db", dbPath], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "no-xdg") } });
+    expect(out).toBe("Would send 1 sources in 1 requests: 2250 characters, about 1000 tokens, about $0.0001 batched for input\n");
+  });
+
+  it("without a key, says where to put one", () => {
+    const dbPath = join(dir, "extract", "brain.db");
+    expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "extract", "--db", dbPath], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "no-xdg") }, stdio: "pipe" })).toThrow(/ai_second_brain\/env: no ANTHROPIC_API_KEY/);
+  });
+});

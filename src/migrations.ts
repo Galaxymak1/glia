@@ -382,6 +382,36 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 10,
+    name: "extraction jobs and candidates",
+    sql: `
+      -- An extract job's payload (#36) maps each request's custom_id to its source and its turn
+      -- refs (T1 → turn id), and once the batch ends, holds its token usage.
+      ALTER TABLE jobs ADD COLUMN payload TEXT;
+
+      -- One row per claim the model returned, carried through validation, deduplication and
+      -- routing (#37-#39) by state. claim_json starts as the model's output with each evidence
+      -- turn resolved to a turn id.
+      CREATE TABLE candidates (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id     INTEGER NOT NULL REFERENCES jobs (id),
+        custom_id  TEXT    NOT NULL,
+        ord        INTEGER NOT NULL,
+        source_id  INTEGER NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+        claim_json TEXT    NOT NULL,
+        model      TEXT    NOT NULL,
+        prompt     TEXT    NOT NULL,
+        batch_id   TEXT    NOT NULL,
+        state      TEXT    NOT NULL CHECK (state IN ('new', 'valid', 'dropped', 'merged', 'accepted', 'queued')),
+        reason     TEXT,
+        similar_to TEXT,
+        claim_id   TEXT,
+        UNIQUE (job_id, custom_id, ord)
+      );
+      CREATE INDEX candidates_state ON candidates (state, id);
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {

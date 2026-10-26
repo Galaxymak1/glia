@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseEnv } from "node:util";
 import { DEFAULT_EMBED_MODEL, DEFAULT_OLLAMA_URL } from "./embed.js";
 
 export interface Config {
@@ -69,4 +70,15 @@ export function isExcludedPath(path: string, config: Config): boolean {
     .split("/")
     .slice(0, -1)
     .some((segment) => segment !== "" && isExcludedProject(segment, config));
+}
+
+/**
+ * The Anthropic API key, from `$XDG_CONFIG_HOME/ai_second_brain/env`, never from the shell: a Claude
+ * Code session sets its own ANTHROPIC_API_KEY, which is not the one extraction is billed to.
+ */
+export function anthropicApiKey(env: NodeJS.ProcessEnv = process.env): string {
+  const path = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "ai_second_brain", "env");
+  const key = existsSync(path) ? parseEnv(readFileSync(path, "utf8")).ANTHROPIC_API_KEY : undefined;
+  if (!key) throw new Error(`${path}: no ANTHROPIC_API_KEY (add a line ANTHROPIC_API_KEY=sk-ant-…)`);
+  return key;
 }

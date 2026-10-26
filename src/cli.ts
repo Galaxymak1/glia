@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
-import { type Config, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
+import { anthropicApiKey, type Config, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
 import { OllamaEmbedder } from "./embed.js";
 import { search } from "./search.js";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
@@ -19,6 +19,7 @@ import { ingestExportZip, mayBeExportFile } from "./claudeAiExport.js";
 import { scrubText } from "./scrub.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { syncClaims } from "./claimIndex.js";
+import { anthropicBatchClient, planExtraction, pollExtraction, submitExtraction } from "./extractor.js";
 import { Vault, vaultDirFor } from "./vault.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
@@ -36,6 +37,11 @@ Commands:
                                 deletes the index and embeds everything again
   index --claims                Mirror the claim files of the vault into the claim tables and embed
                                 their statements; a file that does not parse is reported and skipped
+  extract [--from <date>]       Send every source whose turns changed since the last run to Claude Haiku 5.5
+                                (Batch API) for claim extraction; --dry-run reports the size and cost only.
+                                The key is read from ~/.config/ai_second_brain/env (ANTHROPIC_API_KEY)
+  extract poll [--wait]         Read finished batches into candidate claims; --wait polls every minute
+                                until no batch is running
   search <query...>             Hybrid keyword + meaning search over turns
   mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
   eval run                      Answer every evaluation question with claude -p and the brain tools
@@ -306,6 +312,50 @@ async function indexClaims(dbPath: string, config: Config): Promise<number> {
   }
 }
 
+/** Characters per token measured on these sources by #32; Haiku 5.5 input at $0.10 per MTok, halved in a batch. */
+const CHARS_PER_TOKEN = 2.25;
+const BATCH_INPUT_PER_MTOK = 0.05;
+const POLL_MS = 60_000;
+
+async function extract(dbPath: string, args: string[], values: { from?: string; "dry-run"?: boolean; wait?: boolean }): Promise<number> {
+  const db = openDb(dbPath);
+  try {
+    migrate(db);
+    if (args[0] === "poll") {
+      const client = anthropicBatchClient(anthropicApiKey());
+      for (;;) {
+        const r = await pollExtraction(db, client);
+        console.log(
+          `Batches: ${r.ended} ended, ${r.running} in progress; ${r.candidates} candidates, ${r.failedRequests} failed requests` +
+            (r.ended ? ` (${r.inputTokens} input, ${r.outputTokens} output tokens)` : ""),
+        );
+        if (!values.wait || !r.running) return 0;
+        await new Promise((done) => setTimeout(done, POLL_MS));
+      }
+    }
+    if (args.length) {
+      console.error(`brain extract takes no arguments but poll.\n\n${USAGE}`);
+      return 1;
+    }
+    if (values["dry-run"]) {
+      const { sources, requests } = planExtraction(db, { from: values.from });
+      const chars = requests.reduce((n, r) => n + r.turns.reduce((m, t) => m + t.text.length, 0), 0);
+      const tokens = Math.round(chars / CHARS_PER_TOKEN);
+      console.log(
+        `Would send ${sources.length} sources in ${requests.length} requests: ${chars} characters, about ${tokens} tokens, ` +
+          `about $${((tokens * BATCH_INPUT_PER_MTOK) / 1e6).toFixed(4)} batched for input`,
+      );
+      return 0;
+    }
+    const r = await submitExtraction(db, anthropicBatchClient(anthropicApiKey()), { from: values.from });
+    if (r.jobId === null) console.log("Nothing new to extract.");
+    else console.log(`Submitted job ${r.jobId}: ${r.sources} sources in ${r.requests} requests, ${r.inputTokens} input tokens; run: brain extract poll --wait`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 async function searchCommand(dbPath: string, config: Config, query: string, limit: number, includeInjected: boolean, json: boolean): Promise<number> {
   const db = openDb(dbPath);
   try {
@@ -414,6 +464,8 @@ async function main(argv: string[]): Promise<number> {
       show: { type: "boolean" },
       rebuild: { type: "boolean" },
       claims: { type: "boolean" },
+      from: { type: "string" },
+      wait: { type: "boolean" },
       limit: { type: "string" },
       injected: { type: "boolean" },
       json: { type: "boolean" },
@@ -455,6 +507,8 @@ async function main(argv: string[]): Promise<number> {
     case "index":
       if (values.claims) return indexClaims(values.db ?? defaultDbPath(), loadConfig());
       return index(values.db ?? defaultDbPath(), loadConfig(), values.rebuild ?? false);
+    case "extract":
+      return extract(values.db ?? defaultDbPath(), args, values);
     case "search": {
       const limit = Number(values.limit ?? 10);
       if (!args.length || !Number.isInteger(limit) || limit < 1) {

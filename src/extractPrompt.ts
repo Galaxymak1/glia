@@ -1,13 +1,13 @@
 // The extraction prompt and its output schema (SPEC.md, "Nightly extraction", steps 3 and 4).
-// Draft checked by #32 on French, English and mixed sources; the extractor (#36) sends the same
-// prompt through the Batch API. A change to the prompt or schema bumps EXTRACT_PROMPT_VERSION,
+// Draft checked by #32 on French, English and mixed sources; v2 adds the four fixes #32 found.
+// The extractor (#36) sends it through the Batch API. A change to the prompt or schema bumps EXTRACT_PROMPT_VERSION,
 // which every claim records in `extractor.prompt`.
 
 import { z } from "zod";
 import { embedView } from "./chunk.js";
 import { splitInjected } from "./enrich.js";
 
-export const EXTRACT_PROMPT_VERSION = "extract@v1";
+export const EXTRACT_PROMPT_VERSION = "extract@v2";
 export const EXTRACT_MODEL = "claude-haiku-5-5";
 
 export const CLAIM_KINDS = ["profile", "preference", "project_fact", "decision", "lesson", "procedure"] as const;
@@ -46,7 +46,7 @@ export type ExtractedClaim = Extraction["claims"][number];
 
 export const EXTRACT_SYSTEM = `You extract durable facts about one person, the user, from a conversation they had with Claude. The facts go into their personal memory, which later sessions read back to them, so a wrong or invented fact is worse than a missing one.
 
-Extract a claim only when it will still be useful in a month: who the user is, what they prefer, facts about their projects, decisions with their reasons, lessons learned, and procedures they follow. Skip small talk, one-off tasks, code details that live in the code itself, and anything about Claude rather than the user. Never extract psychological or personality judgements about the user. Most conversations hold zero to five claims; return an empty list when there are none.
+Extract a claim only when it will still be useful in a month: who the user is, what they prefer, facts about their projects, decisions with their reasons, lessons learned, and procedures they follow. Skip small talk, one-off tasks, code details that live in the code itself, and anything about Claude rather than the user. Never extract psychological or personality judgements about the user. Skip facts that will not hold in a month: one game, build or purchase, a single bug, a one-off errand. Most conversations hold zero to five claims; return an empty list when there are none.
 
 Kinds:
 - profile: a stable fact about the user (role, skills, tools they own, where they work).
@@ -66,9 +66,12 @@ Origin, decided from who said it:
 
 Rules:
 - Write each statement as one self-contained sentence in the language of the turns it rests on: French turns give a French statement, English turns an English one. Never translate.
+- In a conversation that mixes languages, write the statement in the language of the user turn you quote.
+- Name the person "the user" in English statements and "l'utilisateur" in French ones, never by name.
 - Every claim cites at least one turn. Each quote is copied character for character from that turn, 5 to 40 words, never translated, shortened inside or paraphrased.
 - Dates: resolve relative time ("depuis mars", "last week", "next year") against the timestamp of the turn that says it, not today. Set valid_from_precision to how precise the result is; use unknown with a null valid_from when nothing dates the claim.
-- Scope: project:<slug> when the claim is about one project (a short lowercase slug from its name), global when it is about the user in general, context:<tag> for a recurring situation.
+- When the time words give only a month or a year ("depuis mars", "in 2024", "last summer"), use that precision (month, year, approx); use day only when the day is known.
+- Scope: project:<slug> when the claim is about one project (a short lowercase slug from its name), global when it is about the user in general, context:<tag> for a recurring situation. A hobby or a recurring situation is context:<tag>, never project:<slug>; project: is for something the user builds or runs.
 - sensitivity is sensitive for health, money, relationships, legal matters, or anything about other identifiable people.
 - confidence: 0.9 or more only for a clear statement by the user; lower for hedged, hypothetical or old statements.`;
 
