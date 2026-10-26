@@ -20,6 +20,7 @@ import { scrubText } from "./scrub.js";
 import { migrate, schemaVersion } from "./migrations.js";
 import { syncClaims } from "./claimIndex.js";
 import { anthropicBatchClient, planExtraction, pollExtraction, submitExtraction } from "./extractor.js";
+import { formatValidation, validateCandidates } from "./validate.js";
 import { Vault, vaultDirFor } from "./vault.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
@@ -329,6 +330,8 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
           `Batches: ${r.ended} ended, ${r.running} in progress; ${r.candidates} candidates, ${r.failedRequests} failed requests` +
             (r.ended ? ` (${r.inputTokens} input, ${r.outputTokens} output tokens)` : ""),
         );
+        const v = validateCandidates(db);
+        if (v.checked) console.log(formatValidation(v));
         if (!values.wait || !r.running) return 0;
         await new Promise((done) => setTimeout(done, POLL_MS));
       }
