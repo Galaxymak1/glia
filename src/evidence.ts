@@ -51,7 +51,6 @@ export const scrubPath = (path: string) =>
     })
     .join(sep);
 
-/** Where raw files live for a given database: a `raw/` folder next to it. */
 export const rawDirFor = (dbPath: string) => join(dirname(dbPath), "raw");
 
 export class EvidenceStore {
