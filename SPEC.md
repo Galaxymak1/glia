@@ -4,7 +4,7 @@
 
 ## Overview
 
-The system is a personal, self-hosted evidence ledger. It keeps every Claude conversation as immutable evidence, derives a small set of reviewed, dated and attributed claims from it, and serves both back to any MCP client. It is a single-user portfolio project, not a product.
+The system is a personal, self-hosted evidence ledger. It keeps every Claude conversation as immutable evidence, derives a small set of reviewed, dated and attributed claims from it, and serves both back to any MCP client. Each install serves one user. The code is source-available under the Elastic License 2.0: anyone may run, read and change it, but not offer it to others as a hosted or managed service.
 
 **Goals**
 
@@ -14,10 +14,11 @@ The system is a personal, self-hosted evidence ledger. It keeps every Claude con
 - Keep review to about 2 minutes a day by queuing only exceptions.
 - Serve the brain from claude.ai web and mobile, Claude Code and Zed through one remote MCP endpoint.
 - Prove on personal evaluation questions that each layer beats a raw-search baseline.
+- Install on a fresh Linux or macOS machine in one command, without reading the source.
 
 **Non-goals**
 
-- Multi-user, sharing or monetisation.
+- Multi-user accounts or sharing within one install.
 - Live capture of claude.ai chats (no legitimate path exists).
 - General document RAG, web clipping or a PKM taxonomy.
 - Psychological or personality inferences about the user.
@@ -361,13 +362,55 @@ The server is one TypeScript monolith in a Docker container behind the existing 
 
 Structured JSON logs, a `/health` endpoint, and a daily summary line in `log.md`: sources ingested, claims proposed and accepted, inbox size, evaluation score.
 
+## Packaging and license
+
+### License
+
+The code is published under the Elastic License 2.0 (`LICENSE`, SPDX `Elastic-2.0`). Anyone may use, copy, modify and redistribute it, at home or at work, but may not provide it to third parties as a hosted or managed service. The author keeps the copyright and with it the right to offer a hosted service later; outside contributions are accepted only under a contributor agreement that preserves that right. All dependencies (better-sqlite3, sqlite-vec, the MCP SDK, fflate, zod) and the BGE-M3 weights are MIT or Apache-2.0, which allow this.
+
+Nothing personal lives in the repository: the database, raw evidence, evaluation questions and config sit under `~/.local/share/ai_second_brain/` and `~/.config/ai_second_brain/`.
+
+### Install paths
+
+| Path | For | Phase |
+| --- | --- | --- |
+| npm package: `npm i -g ai-second-brain`, then `brain init` | Anyone with Node 22 | Packaging |
+| Claude Code plugin bundling the MCP server, the SessionStart briefing hook and `/brain` commands | Claude Code users | Packaging |
+| Docker Compose (brain + Ollama) | The remote server on a VPS | 2 |
+
+### `brain init` and `brain doctor`
+
+`brain init` becomes a wizard that runs once and can be re-run safely:
+
+1. Checks Node and creates or migrates the database.
+2. Finds Ollama and pulls the embedding model, or reports that search will be keyword-only.
+3. Writes the config, asking which Claude Code projects to exclude (client and employer repositories).
+4. Detects installed MCP clients (Claude Code, Claude Desktop, Zed) and registers the server in each, after confirmation.
+5. Installs the scheduled jobs and runs the first ingest and index.
+
+`brain doctor` checks each of these and prints the fix for whatever is broken.
+
+### Scheduled jobs on every OS
+
+A single `brain daemon` runs the local jobs (transcript sweep, index, extraction submit and poll) on its own clock, so one mechanism works on Linux, macOS and Windows. `brain init` starts it at login through the platform's own service manager (systemd user unit, launchd agent, or a Windows scheduled task). It replaces the hand-written systemd user timer of phases 0 and 1.
+
+### Embeddings without Ollama
+
+Ollama is the heaviest install step. A spike tests running the same BGE-M3 Q8_0 GGUF inside the brain's process (node-llama-cpp), with no separate server. If the vectors match Ollama's (cosine 0.999 or more) at an acceptable speed, in-process becomes the default and Ollama stays an option; otherwise Ollama stays and `brain init` installs the model.
+
+### Platforms
+
+Linux and macOS are supported and tested in CI; Windows is best-effort until someone uses it. The CI matrix runs the full test suite on each.
+
 ## Roadmap
 
 Phase 0 comes first: cross-silo search over raw evidence plus the evaluation set is the baseline every later layer must beat.
 
-![roadmap · 5 phases, 4 exit gates](diagrams/roadmap.svg)
+![roadmap · 6 phases, 5 exit gates](diagrams/roadmap.svg)
 
 If claims never beat raw search on the evaluation set, the project stops at phase 0 and still delivers a searchable record of every Claude conversation.
+
+The packaging phase sits between phases 1 and 2 and keeps their numbers. It turns the working system into something a stranger can install (see Packaging and license); its gate is a fresh Linux or macOS machine reaching a searchable brain through `brain init` in under 15 minutes, without reading the source.
 
 The brain map in phase 4 draws the store as a network of neurons: each claim is a node, sized by how often it is recalled and faded when superseded; `edges` and shared evidence are the links between them, and sources and scopes form the clusters. It reads the existing tables and adds no new data.
 
@@ -384,3 +427,4 @@ These were unconfirmed or contradictory in the research and should be checked du
 - [ ] BGE-M3 query latency on the VPS CPU, and VPS RAM headroom.
 - [ ] Is static-header auth available to individual Pro or Max accounts? It would simplify single-user auth.
 - [ ] Working name for the project and the repository.
+- [ ] Can a Claude Code plugin ship native dependencies (better-sqlite3, sqlite-vec) on every platform, or must it call a globally installed `brain`?
