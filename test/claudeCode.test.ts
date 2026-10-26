@@ -201,3 +201,14 @@ describe("injected content", () => {
   });
 });
 
+describe("recalled claims", () => {
+  it("a tool result holding recall output is flagged injected on the next ingest", () => {
+    const session = [
+      line({ type: "user", uuid: "u1", parentUuid: null, timestamp: "2026-10-20T10:00:00Z", message: { role: "user", content: "What do you know about the brain?" } }),
+      line({ type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: "2026-10-20T10:00:01Z", message: { role: "assistant", content: [{ type: "tool_use", id: "x", name: "mcp__brain__recall", input: { query: "brain" } }] } }),
+      line({ type: "user", uuid: "t1", parentUuid: "a1", timestamp: "2026-10-20T10:00:02Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "x", content: [{ type: "text", text: "<brain-claims>\n1. clm_A · The user uses SQLite.\n</brain-claims>" }] }] } }),
+    ].join("\n");
+    const t1 = parseSession(session).turns.find((t) => t.externalUuid === "t1")!;
+    expect(t1).toMatchObject({ role: "tool", isInjected: true });
+  });
+});

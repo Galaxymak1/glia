@@ -5,11 +5,12 @@
  * Part of every parser version: a change to the rules here bumps it, so the next ingest
  * re-parses every source and no turn keeps a flag or language from the old rules.
  */
-export const ENRICH_VERSION = "enrich@1";
+export const ENRICH_VERSION = "enrich@2";
 
 /**
  * Tags the harness wraps around text it adds to a user-role message: reminders, background
- * task notices, the output and caveat of a local slash command, hook output.
+ * task notices, the output and caveat of a local slash command, hook output, and the brain's own
+ * recalled claims.
  */
 const INJECTED_TAGS = [
   "system-reminder",
@@ -20,6 +21,8 @@ const INJECTED_TAGS = [
   "user-prompt-submit-hook",
   "ide_opened_file",
   "ide_selection",
+  // What recall and brief return (src/recall.ts): claims served back must never be extracted again.
+  "brain-claims",
 ];
 const INJECTED_OPENER = new RegExp(`<(${INJECTED_TAGS.join("|")})>`, "g");
 

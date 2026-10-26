@@ -8,7 +8,7 @@ The design is in [SPEC.md](SPEC.md). Phase 0, cross-silo search with an evaluati
 
 - **Ingests** Claude Code transcripts and memory from `~/.claude/projects`, and claude.ai export ZIPs (chats, projects, memories). Secrets are scrubbed before anything is stored, and a session containing a line with only `#nobrain` is never stored.
 - **Searches** turns with keyword (FTS5) and meaning (BGE-M3) search, fused with reciprocal rank fusion.
-- **Serves** two read-only MCP tools, `search_evidence` and `open_evidence`, over stdio.
+- **Serves** four read-only MCP tools over stdio: `search_evidence` and `open_evidence` over raw turns, `recall` and `brief` over reviewed claims.
 - **Evaluates** itself against your own questions, so each layer has to beat raw search before it ships ([docs/eval.md](docs/eval.md)).
 
 Everything stays on your machine: the database lives in `~/.local/share/ai_second_brain/` and the config in `~/.config/ai_second_brain/`.

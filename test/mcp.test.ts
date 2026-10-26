@@ -59,11 +59,13 @@ afterEach(async () => {
 });
 
 describe("tools/list", () => {
-  it("lists both tools as read-only", async () => {
+  it("lists every tool as read-only", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => [t.name, t.annotations?.readOnlyHint])).toEqual([
       ["search_evidence", true],
       ["open_evidence", true],
+      ["recall", true],
+      ["brief", true],
     ]);
   });
 });

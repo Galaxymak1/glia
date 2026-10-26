@@ -1,10 +1,12 @@
-// The local stdio MCP server (#8, SPEC.md "MCP tools"): `search_evidence` and `open_evidence`
-// over the evidence layer. Read-only; every result stays well under 25k tokens.
+// The local stdio MCP server (#8, #41, SPEC.md "MCP tools"): `search_evidence` and `open_evidence`
+// over the evidence layer, `recall` and `brief` over claims. Read-only; every result stays well
+// under 25k tokens.
 
 import type Database from "better-sqlite3";
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import type { Embedder } from "./embed.js";
+import { brief, CLAIMS_TAG, logRetrievals, MAX_RECALL_LIMIT, recall, type ClaimHit } from "./recall.js";
 import { search } from "./search.js";
 import { indexStatus } from "./vectors.js";
 
@@ -36,6 +38,20 @@ interface TurnRow {
   ts: string | null;
   text: string;
   is_injected: number;
+}
+
+/** A recalled statement is cut here: 20 of them stay under RESULT_CHARS. */
+const STATEMENT_CHARS = 2_000;
+const scopeSchema = z.string().regex(/^(global|project:.+|context:.+)$/, "global, project:<slug> or context:<tag>");
+
+function formatHits(hits: ClaimHit[], notes: string[]): string {
+  const lines = hits.map((h, i) => {
+    const validity = [`as of ${h.as_of}`, h.valid_to && `valid to ${h.valid_to}`, h.status !== "active" && h.status].filter(Boolean).join(" · ");
+    const evidence = h.evidence.map((e) => (e.turn_id === null ? e.source : `turn ${e.turn_id} (${e.source})`)).join(", ");
+    return `${i + 1}. ${h.id} · ${h.kind} · ${h.scope} · ${h.origin} · ${validity}\n   ${cut(h.statement.replace(/\s+/g, " "), STATEMENT_CHARS).text}\n   evidence: ${evidence}`;
+  });
+  const body = [lines.length ? lines.join("\n") : "No claims match.", ...notes.map((n) => `Note: ${n}`)].join("\n\n");
+  return `<${CLAIMS_TAG}>\n${body}\n</${CLAIMS_TAG}>`;
 }
 
 const cut = (text: string, max: number) => (text.length > max ? { text: `${text.slice(0, max)}…`, truncated: true } : { text, truncated: false });
@@ -174,6 +190,55 @@ export function createMcpServer(db: Database.Database, embedder: Embedder | null
       const r = openEvidence(db, id, window);
       if (!r) return { content: [{ type: "text", text: `No turn ${id}.` }], isError: true };
       return { content: [{ type: "text", text: formatOpen(r) }] };
+    },
+  );
+
+  // Every served claim is logged with the client that asked, so it is known when it comes back.
+  const client = () => server.server.getClientVersion()?.name ?? "unknown";
+
+  server.registerTool(
+    "recall",
+    {
+      title: "Recall claims",
+      description:
+        "Hybrid search over the user's reviewed claims: facts, preferences, decisions and lessons drawn from their conversations, " +
+        "each with its origin (did the user say it, or did Claude suggest it), its scope and when it became true. Superseded " +
+        "claims are hidden unless include_superseded is set, or as_of asks what was true at a past date. Evidence ids open " +
+        "with open_evidence.",
+      inputSchema: z.object({
+        query: z.string().min(1).describe("What to look for, in any language"),
+        scope: scopeSchema.optional().describe("Only claims of this scope (and global ones): project:<slug>, context:<tag> or global"),
+        as_of: isoDate.optional().describe("Only claims valid at this date (ISO): what was true then, superseded claims included"),
+        include_superseded: z.boolean().default(false).describe("Also return claims a later claim superseded"),
+        limit: z.number().int().min(1).max(MAX_RECALL_LIMIT).default(8).describe("Number of claims"),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      const r = await recall(db, embedder, args);
+      logRetrievals(db, r.hits.map((h) => h.id), client());
+      const notes = r.meaningError ? [`meaning search unavailable (${r.meaningError}); keyword results only`] : [];
+      return { content: [{ type: "text", text: formatHits(r.hits, notes) }] };
+    },
+  );
+
+  server.registerTool(
+    "brief",
+    {
+      title: "Brief",
+      description:
+        "A compact briefing on the user: their profile and preferences, open decisions, and the active facts of one project, " +
+        "newest first, each with the date it holds from (as of). Call it at the start of a task about a project.",
+      inputSchema: z.object({
+        scope: scopeSchema.optional().describe("The project or context to brief on, e.g. project:ai-brain"),
+        budget_tokens: z.number().int().min(200).max(4000).default(1500).describe("Size of the briefing"),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      const r = brief(db, args);
+      logRetrievals(db, r.claimIds, client());
+      return { content: [{ type: "text", text: r.text }] };
     },
   );
 
