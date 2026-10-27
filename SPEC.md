@@ -396,7 +396,7 @@ A single `glia daemon` runs the local jobs (transcript sweep, index, extraction 
 
 ### Embeddings without Ollama
 
-Ollama is the heaviest install step. A spike tests running the same BGE-M3 Q8_0 GGUF inside glia's own process (node-llama-cpp), with no separate server. If the vectors match Ollama's (cosine 0.999 or more) at an acceptable speed, in-process becomes the default and Ollama stays an option; otherwise Ollama stays and `glia init` installs the model.
+Ollama is the heaviest install step. A spike tests running the same BGE-M3 Q8_0 GGUF inside glia's own process (node-llama-cpp), with no separate server. If the vectors match Ollama's (cosine 0.999 or more) at an acceptable speed, in-process becomes the default and Ollama stays an option; otherwise Ollama stays and `glia init` installs the model. **Spike result (2026-10-27, `scripts/spike-llamacpp.ts`, 200 chunks of the real history, CPU):** in-process vectors match Ollama's at a minimum cosine of 0.99975 (median 1.0000), at 405 tokens/s against Ollama's 392, so in-process becomes the default. Two settings matter: `batchSize: 8192`, because the default 512 makes chunks longer than 512 tokens drift (cosine 0.23 to 0.4), and BOS/EOS tokens around the text. The cost is the install: `node-llama-cpp` adds about 770 MB to `node_modules` on Linux x64 (its CUDA and Vulkan binaries, unused on CPU) and 40 s of install time, plus a one-time 634 MB model download. Automatic GPU selection picked Vulkan on an AMD GPU and lost the device, so glia forces the CPU. Ollama stays as the fallback when `node-llama-cpp` cannot load.
 
 ### Platforms
 
