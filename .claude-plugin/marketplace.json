@@ -1,0 +1,11 @@
+{
+  "name": "glia",
+  "owner": { "name": "Kylian" },
+  "plugins": [
+    {
+      "name": "glia",
+      "source": "./plugin",
+      "description": "Memory for Claude: remembers your conversations and brings back what matters"
+    }
+  ]
+}

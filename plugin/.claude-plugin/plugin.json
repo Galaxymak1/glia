@@ -1,0 +1,10 @@
+{
+  "name": "glia",
+  "displayName": "glia",
+  "description": "Memory for Claude: remembers your conversations and brings back what matters",
+  "version": "0.1.0",
+  "author": { "name": "Kylian" },
+  "repository": "https://github.com/Galaxymak1/glia",
+  "license": "Elastic-2.0",
+  "keywords": ["memory", "mcp", "second-brain"]
+}

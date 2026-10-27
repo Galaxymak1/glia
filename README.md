@@ -15,36 +15,30 @@ Everything stays on your machine: the database lives in `~/.local/share/glia/` a
 
 ## Install
 
-Installation is from source for now. A one-command install (`glia init` wizard, npm package `@galaxymak1/glia`, Claude Code plugin) is planned in the packaging phase of [the roadmap](SPEC.md#roadmap).
+You need Node 22 or later. Pick one:
 
-Requirements: Node 22 or later, and [Ollama](https://ollama.com) for meaning search. Without Ollama, search is keyword-only.
-
-```sh
-git clone https://github.com/Galaxymak1/ai_second_brain.git
-cd ai_second_brain
-npm ci
-npm run build
-ollama pull hf.co/gpustack/bge-m3-GGUF:Q8_0
-
-node dist/cli.js init
-node dist/cli.js ingest ~/.claude/projects ~/Downloads/claude-export.zip
-node dist/cli.js index
-node dist/cli.js search "which database did I pick"
-```
-
-`glia --help` lists every command and option. To skip projects you don't want stored, such as client repositories, list their folders in `~/.config/glia/config.json`:
-
-```json
-{ "claudeCode": { "exclude": ["-home-me-work-*"] } }
-```
-
-## Connect a client
+**In a terminal**
 
 ```sh
-claude mcp add --scope user glia -- node /path/to/ai_second_brain/dist/cli.js mcp
+npm i -g @galaxymak1/glia
+glia init
 ```
 
-Zed and the details of both tools are in [docs/mcp.md](docs/mcp.md).
+**From Claude Code**
+
+```
+/plugin marketplace add Galaxymak1/glia
+/plugin install glia@glia
+/glia:setup
+```
+
+`glia init` asks which projects it must never store (Enter for none) and then once whether to go ahead. It sets up the database, the meaning search, your Claude clients and a background job that keeps glia up to date, then ingests your Claude Code history. When it ends, keyword search already works:
+
+```sh
+glia search "which database did I pick"
+```
+
+Meaning search is built in the background (`glia doctor` shows how far it is), and claims are extracted at night once you add `ANTHROPIC_API_KEY` to `~/.config/glia/env`. Everything else, including Zed and other clients, a manual setup and the Ollama alternative, is in [docs/install.md](docs/install.md). `glia --help` lists every command.
 
 ## License
 

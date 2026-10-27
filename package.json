@@ -1,9 +1,8 @@
 {
   "name": "@galaxymak1/glia",
-  "version": "0.0.0",
-  "private": true,
-  "license": "Elastic-2.0",
+  "version": "0.1.0",
   "description": "Memory for Claude: a personal, self-hosted evidence ledger over your Claude conversations",
+  "license": "Elastic-2.0",
   "type": "module",
   "bin": {
     "glia": "dist/cli.js"
@@ -11,12 +10,34 @@
   "engines": {
     "node": ">=22"
   },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "glia": "tsx src/cli.ts"
+    "glia": "tsx src/cli.ts",
+    "prepack": "npm run build"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Galaxymak1/glia.git"
+  },
+  "homepage": "https://github.com/Galaxymak1/glia#readme",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "mcp",
+    "memory",
+    "second-brain",
+    "sqlite"
+  ],
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",
     "@modelcontextprotocol/server": "~2.3.1",
