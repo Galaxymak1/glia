@@ -253,6 +253,7 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
     }
   }
   io.say(`glia will:\n${todo.map((t) => `  - ${t}`).join("\n")}`);
+  if (!opts.dryRun) io.say("(a few minutes, mostly the one-time model download)");
   if (opts.dryRun) return before;
   if (!opts.yes && !(await io.confirm("Go ahead?", true))) {
     io.say("Nothing changed.");
@@ -271,11 +272,12 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
   }
   if (failing.has("embeddings")) {
     if (inProcess) {
-      let last = 0;
+      let lastTenth = -1;
       await env.inProcess.download((done, total) => {
-        if (Date.now() - last > 2000) {
-          last = Date.now();
-          io.say(`  downloading the embedding model: ${mb(done)} / ${mb(total)} MB`);
+        const tenth = total ? Math.floor((done / total) * 10) : 0;
+        if (tenth > lastTenth) {
+          lastTenth = tenth;
+          io.say(`  downloading the embedding model: ${tenth * 10}% (${mb(done)} / ${mb(total)} MB)`);
         }
       });
     } else await pullModel(env, url, model, io.say);
@@ -299,7 +301,8 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
       const sources = (db.prepare("SELECT count(*) AS n FROM sources").get() as { n: number }).n;
       const turns = (db.prepare("SELECT count(*) AS n FROM turns").get() as { n: number }).n;
       const word = (db.prepare("SELECT text FROM turns WHERE role = 'user' AND length(text) > 40 ORDER BY id LIMIT 1").get() as { text: string } | undefined)?.text.match(/\p{L}{6,}/u)?.[0] ?? "decision";
-      io.say(`Ready: ${sources} sources, ${turns} turns searchable now. Try: glia search "${word}"`);
+      if (sources) io.say(`Ready: ${sources} sources, ${turns} turns searchable now. Try: glia search "${word}"`);
+      else io.say(`No Claude Code sessions found in ${env.projectsDir}. They appear there once you have used Claude Code; add other history with: glia ingest <folder or claude.ai export .zip>`);
     } finally {
       db.close();
     }
@@ -313,5 +316,15 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
     io.say(opts.noService ? "Run: glia index to build meaning search (no daemon was installed)" : "Meaning search builds in the background; glia doctor shows progress.");
   }
   if (!env.hasApiKey()) io.say("Claims are off until you add ANTHROPIC_API_KEY to ~/.config/glia/env");
+  io.say(
+    [
+      "",
+      "Next:",
+      "  - Restart Claude Code (or Claude Desktop), then ask it about something you decided before: it looks it up in glia.",
+      "  - Your Claude Code sessions are read automatically from now on. To add more history, e.g. a claude.ai export (Settings > Privacy > Export data), run:",
+      "      glia ingest <export.zip or folder>",
+      "  - glia doctor checks everything and says how to fix what's off.",
+    ].join("\n"),
+  );
   return after;
 }

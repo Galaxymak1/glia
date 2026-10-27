@@ -43,6 +43,10 @@ describe("hasOptOutMarker", () => {
 
 describe("sessionOf", () => {
   const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
+  it("reads Windows paths", () => {
+    expect(sessionOf(`C:\\Users\\me\\.claude\\projects\\p\\${S}.jsonl`)).toEqual({ sessionId: S, isTranscript: true });
+    expect(sessionOf(`p\\${S}\\subagents\\agent-a1.jsonl`)).toEqual({ sessionId: S, isTranscript: false });
+  });
   it("maps the transcript and everything in its folder to the session", () => {
     expect(sessionOf(`/projects/-p/${S}.jsonl`)).toEqual({ sessionId: S, isTranscript: true });
     expect(sessionOf(`/projects/-p/${S}/subagents/agent-a1.jsonl`)).toEqual({ sessionId: S, isTranscript: false });

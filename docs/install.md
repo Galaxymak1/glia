@@ -37,6 +37,15 @@ What it sets up, in order:
 
 The plugin gives Claude the glia tools, a briefing at the start of each session, and the commands `/glia:setup`, `/glia:recall`, `/glia:search` and `/glia:status`. It does not contain glia itself: `/glia:setup` has Claude install the npm package and run `glia init` with you. Until then, each session starts with a line telling you to run it.
 
+## Adding history
+
+`glia init` reads your Claude Code sessions (`~/.claude/projects`, or `%USERPROFILE%\.claude\projects` on Windows) and the daemon keeps them current. Anything else goes through `glia ingest`, which takes any mix of files and folders:
+
+- a claude.ai export: in claude.ai, Settings > Privacy > Export data, then `glia ingest <the downloaded .zip>`. Conversations, projects and memory are read; the ZIP is not unpacked on disk.
+- a copied Claude Code folder, from another machine or a backup: `glia ingest <folder>`.
+
+Secrets are scrubbed before anything is stored, projects you excluded stay out, and running it twice does no harm. To have the daemon watch another folder, add it under `daemon.paths` in `~/.config/glia/config.json`.
+
 ## Checking and fixing
 
 `glia doctor` checks every step above and prints the fix for whatever is broken. It exits with 1 when a check fails. A meaning index that is still being built is not a failure.

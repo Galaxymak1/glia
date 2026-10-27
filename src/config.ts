@@ -91,7 +91,7 @@ export function isExcludedProject(projectDir: string, config: Config): boolean {
  */
 export function isExcludedPath(path: string, config: Config): boolean {
   return path
-    .split("/")
+    .split(/[\\/]/)
     .slice(0, -1)
     .some((segment) => segment !== "" && isExcludedProject(segment, config));
 }

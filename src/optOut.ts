@@ -9,7 +9,7 @@ import { splitInjected } from "./enrich.js";
 
 export const OPT_OUT_MARKER = "#nobrain";
 
-const SESSION_FILE = /(?:^|\/)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(\.jsonl$|\/)/;
+const SESSION_FILE = /(?:^|[\\/])([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(\.jsonl$|[\\/])/;
 
 /**
  * The session a Claude Code file belongs to: the session transcript `<id>.jsonl`, or anything in

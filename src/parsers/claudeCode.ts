@@ -3,7 +3,7 @@
 // skipped and counted, never fatal; the raw file stays in the evidence store, so nothing
 // skipped here is lost.
 
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { ENRICH_VERSION, splitInjected } from "../enrich.js";
 
 export const CC_PARSER_VERSION = `cc@3+${ENRICH_VERSION}`;
@@ -30,7 +30,10 @@ export type RootShape = "projects-folder" | "project-folder" | "session-file";
  * folder (a copy, a spool, a symlink target). Exclusion and parsing therefore never depend
  * on what the folder is called.
  */
-export function projectsView(root: string, realRoot: string, shape: RootShape = "projects-folder"): (path: string) => string {
+export function projectsView(root: string, realRootOnDisk: string, shape: RootShape = "projects-folder"): (path: string) => string {
+  // The rules read forward slashes; Windows paths come with backslashes.
+  const slashes = (p: string) => (sep === "\\" ? p.split("\\").join("/") : p);
+  const realRoot = slashes(realRootOnDisk);
   const at = realRoot.lastIndexOf("/projects/");
   let prefix: string;
   if (realRoot.endsWith("/projects")) prefix = "";
@@ -38,7 +41,7 @@ export function projectsView(root: string, realRoot: string, shape: RootShape = 
   else if (shape === "project-folder") prefix = basename(realRoot);
   else if (shape === "session-file") prefix = join(basename(dirname(realRoot)), basename(realRoot));
   else prefix = "";
-  return (path) => join("/projects", prefix, relative(root, path));
+  return (path) => slashes(join("/projects", prefix, relative(root, path)));
 }
 
 /** Whether a folder looks like one Claude Code project: session files or a memory/ folder directly in it. */

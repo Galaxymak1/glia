@@ -34,7 +34,7 @@ export class LlamaCppEmbedder implements Embedder {
     this.opened ??= (async () => {
       const { getLlama } = await this.load();
       // The CPU on purpose: automatic GPU selection picked Vulkan on an AMD GPU and lost the device.
-      const llama = await getLlama({ gpu: false });
+      const llama = await getLlama({ gpu: false, logLevel: "error" as never });
       const model = await llama.loadModel({ modelPath: this.modelPath });
       // batchSize 8192 as Ollama sets it: the default 512 splits a longer chunk and its vector drifts.
       const context = await model.createEmbeddingContext({ contextSize: 8192, batchSize: 8192 });

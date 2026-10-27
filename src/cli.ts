@@ -514,7 +514,10 @@ async function searchCommand(dbPath: string, config: Config, query: string, limi
       console.log(JSON.stringify(result.hits, null, 2));
       return 0;
     }
-    if (!result.hits.length) console.log("No results.");
+    if (!result.hits.length) {
+      const turns = (db.prepare("SELECT count(*) AS n FROM turns").get() as { n: number }).n;
+      console.log(turns ? "No results." : "No results: nothing is stored yet. Run glia ingest <folder or claude.ai export .zip>, or glia doctor to see what is set up.");
+    }
     result.hits.forEach((h, i) => {
       const ranks = [h.keywordRank && `keyword #${h.keywordRank}`, h.meaningRank && `meaning #${h.meaningRank}`].filter(Boolean).join(", ");
       const when = h.ts ? ` · ${h.ts.slice(0, 16).replace("T", " ")}` : "";

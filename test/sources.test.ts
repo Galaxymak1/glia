@@ -163,6 +163,14 @@ describe("isExcludedPath", () => {
   });
 });
 
+describe("isExcludedPath on Windows paths", () => {
+  it("reads backslash separators like slashes", () => {
+    const config: Config = { claudeCode: { exclude: ["C--Code-school-*"] } };
+    expect(isExcludedPath("C--Code-school-pgl\\4e72e044-0bd2-40ea-afbf-fa36accc5e46.jsonl", config)).toBe(true);
+    expect(isExcludedPath("C--Code-Side-Projects-portfolio\\4e72e044-0bd2-40ea-afbf-fa36accc5e46.jsonl", config)).toBe(false);
+  });
+});
+
 describe("isExcludedProject", () => {
   it("matches whole folder names, with * as wildcard and other characters literal", () => {
     const config: Config = { claudeCode: { exclude: ["-home-me-work-*", "-home-me-Downloads", "a.b"] } };

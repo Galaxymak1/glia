@@ -44,6 +44,17 @@ glia search "which database did I pick"
 
 Meaning search finishes building in the background, and `glia doctor` shows how far along it is and the fix for anything that's off. Add an Anthropic API key to `~/.config/glia/env` and glia also distils your conversations into reviewable facts overnight; that is the one step that sends text to Anthropic, and it stays off until you add a key. More options, other clients and troubleshooting are in [docs/install.md](docs/install.md).
 
+## Bring in your history
+
+Claude Code sessions are picked up automatically, and kept up to date every 15 minutes. To add anything else, point glia at it:
+
+```sh
+glia ingest ~/Downloads/data-2026-10-20.zip   # a claude.ai export (Settings > Privacy > Export data)
+glia ingest ~/old-backup/projects             # a folder of Claude Code sessions
+```
+
+It's safe to run again: what was already read is skipped.
+
 ## What Claude gets
 
 glia gives Claude four read-only tools:
