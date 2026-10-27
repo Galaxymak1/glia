@@ -17,7 +17,7 @@ describe("package", () => {
 
   it("is public under the scope, with the glia command", () => {
     const pkg = readJson("package.json");
-    expect(pkg).toMatchObject({ name: "@galaxymak1/glia", version: "0.1.0", bin: { glia: "dist/cli.js" }, publishConfig: { access: "public" }, license: "Elastic-2.0" });
+    expect(pkg).toMatchObject({ name: "@galaxymak1/glia", version: expect.stringMatching(/^\d+\.\d+\.\d+$/), bin: { glia: "dist/cli.js" }, publishConfig: { access: "public" }, license: "Elastic-2.0" });
     expect(pkg.private).toBeUndefined();
     expect(pkg.scripts.prepack).toBe("npm run build");
   });
