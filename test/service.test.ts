@@ -14,6 +14,11 @@ describe("serviceFiles", () => {
     );
   });
 
+  it("linux: a path with a space is quoted in ExecStart", () => {
+    const [f] = serviceFiles("linux", ["/opt/my tools/node", "/home/a b/glia/dist/cli.js"], home);
+    expect(f!.content).toContain('ExecStart="/opt/my tools/node" "/home/a b/glia/dist/cli.js" daemon\n');
+  });
+
   it("darwin: a launchd agent that runs at load and restarts after a failure", () => {
     const [f] = serviceFiles("darwin", cli, home);
     expect(f!.path).toBe("/home/me/Library/LaunchAgents/dev.galaxymak1.glia.plist");

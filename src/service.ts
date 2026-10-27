@@ -20,7 +20,7 @@ export function serviceFiles(p: Platform, cli: string[], home: string): { path: 
     return [
       {
         path: unitPath(home),
-        content: `[Unit]\nDescription=glia: memory for Claude\n\n[Service]\nExecStart=${[...cli, "daemon"].join(" ")}\nRestart=on-failure\nRestartSec=30\n\n[Install]\nWantedBy=default.target\n`,
+        content: `[Unit]\nDescription=glia: memory for Claude\n\n[Service]\nExecStart=${[...cli, "daemon"].map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ")}\nRestart=on-failure\nRestartSec=30\n\n[Install]\nWantedBy=default.target\n`,
       },
     ];
   }

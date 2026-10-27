@@ -60,4 +60,20 @@ describe("moveLegacyPaths", () => {
     expect(moveLegacyPaths({ home, XDG_DATA_HOME: join(home, "data"), GLIA_DB: "/x.db" }, { log: () => {} }).moved).toEqual([]);
     expect(moveLegacyPaths({ home, XDG_DATA_HOME: join(home, "data") }, { log: () => {} }).moved).toEqual([join(home, "data/glia")]);
   });
+
+  it("loses a race to another glia process without failing", () => {
+    mkdirSync(join(home, ".local/share/ai_second_brain"), { recursive: true });
+    const rename = () => {
+      throw Object.assign(new Error("ENOENT: the other process moved it first"), { code: "ENOENT" });
+    };
+    expect(moveLegacyPaths({ home }, { log: () => {}, rename })).toEqual({ moved: [], conflict: [] });
+  });
+
+  it("still reports a move that fails for another reason", () => {
+    mkdirSync(join(home, ".local/share/ai_second_brain"), { recursive: true });
+    const rename = () => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    };
+    expect(() => moveLegacyPaths({ home }, { log: () => {}, rename })).toThrow(/EACCES/);
+  });
 });

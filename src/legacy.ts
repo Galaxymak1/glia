@@ -15,9 +15,10 @@ interface LegacyEnv {
  * Moves `<data>/ai_second_brain` and `<config>/ai_second_brain` to their glia names when the old
  * folder exists and the new one does not; the database file inside is renamed `glia.db`. When both
  * exist nothing is moved and the pair is returned for `glia doctor`. An explicit `GLIA_DB` is the
- * user's own path, so nothing is moved then.
+ * user's own path, so nothing is moved then. A second glia process starting at the same moment (an
+ * MCP server and a hook, after an upgrade) may move the folder first: that is not an error.
  */
-export function moveLegacyPaths(env: LegacyEnv = process.env, io: { log(s: string): void } = { log: (s) => console.error(s) }): { moved: string[]; conflict: [string, string][] } {
+export function moveLegacyPaths(env: LegacyEnv = process.env, io: { log(s: string): void; rename?(from: string, to: string): void } = { log: (s) => console.error(s) }): { moved: string[]; conflict: [string, string][] } {
   const home = env.home ?? homedir();
   const moved: string[] = [];
   const conflict: [string, string][] = [];
@@ -31,9 +32,16 @@ export function moveLegacyPaths(env: LegacyEnv = process.env, io: { log(s: strin
       conflict.push([from, to]);
       continue;
     }
-    renameSync(from, to);
+    const rename = io.rename ?? renameSync;
+    try {
+      rename(from, to);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "EEXIST" || code === "ENOTEMPTY") continue;
+      throw err;
+    }
     for (const suffix of ["", "-wal", "-shm"]) {
-      if (existsSync(join(to, `brain.db${suffix}`))) renameSync(join(to, `brain.db${suffix}`), join(to, `glia.db${suffix}`));
+      if (existsSync(join(to, `brain.db${suffix}`))) rename(join(to, `brain.db${suffix}`), join(to, `glia.db${suffix}`));
     }
     io.log(`glia: moved ${from} to ${to}`);
     moved.push(to);
