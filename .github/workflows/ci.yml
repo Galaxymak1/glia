@@ -20,7 +20,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # npm ci reads the lockfile, which loses better-sqlite3's gypfile:false, so it tries
+      # node-gyp, which cannot find the runner's Visual Studio. The package ships prebuilds.
+      - run: npm ci ${{ matrix.os == 'windows-latest' && '--ignore-scripts' || '' }}
       - run: npm run typecheck
       - run: npx vitest run --testTimeout 30000
 

@@ -20,7 +20,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "glia": "tsx src/cli.ts",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "version": "node scripts/sync-plugin-version.mjs && git add plugin/.claude-plugin/plugin.json"
   },
   "publishConfig": {
     "access": "public"
