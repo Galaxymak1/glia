@@ -211,4 +211,12 @@ describe("recalled claims", () => {
     const t1 = parseSession(session).turns.find((t) => t.externalUuid === "t1")!;
     expect(t1).toMatchObject({ role: "tool", isInjected: true });
   });
+  it("glia's own tag is flagged too", () => {
+    const session = [
+      line({ type: "user", uuid: "u1", parentUuid: null, timestamp: "2026-10-20T10:00:00Z", message: { role: "user", content: "hi" } }),
+      line({ type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: "2026-10-20T10:00:01Z", message: { role: "assistant", content: [{ type: "tool_use", id: "x", name: "mcp__glia__recall", input: { query: "q" } }] } }),
+      line({ type: "user", uuid: "t1", parentUuid: "a1", timestamp: "2026-10-20T10:00:02Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "x", content: [{ type: "text", text: "<glia-claims>\n1. clm_A · The user uses SQLite.\n</glia-claims>" }] }] } }),
+    ].join("\n");
+    expect(parseSession(session).turns.find((t) => t.externalUuid === "t1")).toMatchObject({ role: "tool", isInjected: true });
+  });
 });

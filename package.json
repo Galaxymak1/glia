@@ -1,12 +1,12 @@
 {
-  "name": "ai-second-brain",
+  "name": "@galaxymak1/glia",
   "version": "0.0.0",
   "private": true,
   "license": "Elastic-2.0",
-  "description": "Personal, self-hosted evidence ledger over Claude conversations",
+  "description": "Memory for Claude: a personal, self-hosted evidence ledger over your Claude conversations",
   "type": "module",
   "bin": {
-    "brain": "dist/cli.js"
+    "glia": "dist/cli.js"
   },
   "engines": {
     "node": ">=22"
@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "brain": "tsx src/cli.ts"
+    "glia": "tsx src/cli.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",

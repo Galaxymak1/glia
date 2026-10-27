@@ -24,10 +24,10 @@ export function embeddingSettings(config: Config): { url: string; model: string 
   return { url: config.embedding?.url ?? DEFAULT_OLLAMA_URL, model: config.embedding?.model ?? DEFAULT_EMBED_MODEL };
 }
 
-/** `$BRAIN_CONFIG`, else `$XDG_CONFIG_HOME/ai_second_brain/config.json` (XDG default `~/.config`). */
+/** `$GLIA_CONFIG`, else `$XDG_CONFIG_HOME/glia/config.json` (XDG default `~/.config`). */
 export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.BRAIN_CONFIG) return env.BRAIN_CONFIG;
-  return join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "ai_second_brain", "config.json");
+  if (env.GLIA_CONFIG) return env.GLIA_CONFIG;
+  return join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "glia", "config.json");
 }
 
 /** Reads the config file; a missing file means the defaults. Throws on a file that is present but invalid. */
@@ -73,11 +73,11 @@ export function isExcludedPath(path: string, config: Config): boolean {
 }
 
 /**
- * The Anthropic API key, from `$XDG_CONFIG_HOME/ai_second_brain/env`, never from the shell: a Claude
+ * The Anthropic API key, from `$XDG_CONFIG_HOME/glia/env`, never from the shell: a Claude
  * Code session sets its own ANTHROPIC_API_KEY, which is not the one extraction is billed to.
  */
 export function anthropicApiKey(env: NodeJS.ProcessEnv = process.env): string {
-  const path = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "ai_second_brain", "env");
+  const path = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "glia", "env");
   const key = existsSync(path) ? parseEnv(readFileSync(path, "utf8")).ANTHROPIC_API_KEY : undefined;
   if (!key) throw new Error(`${path}: no ANTHROPIC_API_KEY (add a line ANTHROPIC_API_KEY=sk-ant-…)`);
   return key;

@@ -29,12 +29,12 @@ export class Vault {
   }
 
   /**
-   * The brain's own commits: an identity given per command, so they work with no global git
+   * glia's own commits: an identity given per command, so they work with no global git
    * config and the user's own commits in the vault (obsidian-git) keep their author; and no
    * signing or hooks from the user's config, which could prompt or fail.
    */
   private commit(message: string, paths: string[]): void {
-    this.git("-c", "user.name=brain", "-c", "user.email=brain@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", message, "--", ...paths);
+    this.git("-c", "user.name=glia", "-c", "user.email=glia@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", message, "--", ...paths);
   }
 
   /** Creates the folder and its repository on first use. */
@@ -66,7 +66,7 @@ export class Vault {
     this.ensure();
     const rel = this.claimPath(c);
     if (opts.expectSha !== undefined && !this.isUnchanged(c, opts.expectSha)) {
-      throw new Error(`${rel} changed on disk since it was indexed; fix it or run: brain index --claims`);
+      throw new Error(`${rel} changed on disk since it was indexed; fix it or run: glia index --claims`);
     }
     mkdirSync(dirname(join(this.dir, rel)), { recursive: true });
     writeFileSync(join(this.dir, rel), serializeClaim(c));

@@ -1,6 +1,6 @@
 # Local MCP server (WP8, WP18)
 
-`brain mcp` serves the evidence layer and the claims to an MCP client over stdio. It offers four read-only tools, `search_evidence` and `open_evidence` over raw turns, `recall` and `brief` over reviewed claims, over the same database as the CLI (`--db`, else `$BRAIN_DB`, else `~/.local/share/ai_second_brain/brain.db`). Meaning search needs Ollama with the index model. Without it, results are keyword-only and the tool says so.
+`glia mcp` serves the evidence layer and the claims to an MCP client over stdio. It offers four read-only tools, `search_evidence` and `open_evidence` over raw turns, `recall` and `brief` over reviewed claims, over the same database as the CLI (`--db`, else `$GLIA_DB`, else `~/.local/share/glia/glia.db`). Meaning search needs Ollama with the index model. Without it, results are keyword-only and the tool says so.
 
 The remote endpoint with OAuth comes in Phase 2. This local server is for Claude Code and Zed on the laptop.
 
@@ -15,7 +15,7 @@ The remote endpoint with OAuth comes in Phase 2. This local server is for Claude
 
 Size: the cited turn is cut at 24,000 characters and each neighbour at 2,000. The whole result stays under 50,000 characters, about 18k tokens. Neighbours nearest the cited turn are kept first, and the result says how many were left out.
 
-`recall` and `brief` wrap their result in `<brain-claims>` and log each claim served in the `retrievals` table. The next ingest flags that text as injected wherever a transcript holds it, and extraction leaves out any statement served, so a claim is never extracted again from its own echo.
+`recall` and `brief` wrap their result in `<glia-claims>` and log each claim served in the `retrievals` table. The next ingest flags that text as injected wherever a transcript holds it, and extraction leaves out any statement served, so a claim is never extracted again from its own echo.
 
 ## Claude Code
 
@@ -23,10 +23,10 @@ Replace `/path/to/ai_second_brain` with the absolute path of your checkout, and 
 
 ```sh
 npm run build
-claude mcp add --scope user brain -- node /path/to/ai_second_brain/dist/cli.js mcp
+claude mcp add --scope user glia -- node /path/to/ai_second_brain/dist/cli.js mcp
 ```
 
-The server reads the default database. For another one, add `--db /path/to/brain.db` after `mcp`. A path where no database exists is created empty, and every search then finds nothing.
+The server reads the default database. For another one, add `--db /path/to/glia.db` after `mcp`. A path where no database exists is created empty, and every search then finds nothing.
 
 To check the command by hand, it should print one JSON line and exit:
 
@@ -44,7 +44,7 @@ In `settings.json` (or Settings → AI → MCP Servers → Add Local Server), wi
 ```json
 {
   "context_servers": {
-    "brain": {
+    "glia": {
       "command": "node",
       "args": ["/path/to/ai_second_brain/dist/cli.js", "mcp"],
       "env": {}
@@ -53,4 +53,4 @@ In `settings.json` (or Settings → AI → MCP Servers → Add Local Server), wi
 }
 ```
 
-A green dot next to `brain` in the Agent panel's settings means the server is running.
+A green dot next to `glia` in the Agent panel's settings means the server is running.

@@ -4,11 +4,11 @@ import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 
-/** `$BRAIN_DB`, else `$XDG_DATA_HOME/ai_second_brain/brain.db` (XDG default `~/.local/share`). */
+/** `$GLIA_DB`, else `$XDG_DATA_HOME/glia/glia.db` (XDG default `~/.local/share`). */
 export function defaultDbPath(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.BRAIN_DB) return env.BRAIN_DB;
+  if (env.GLIA_DB) return env.GLIA_DB;
   const dataHome = env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-  return join(dataHome, "ai_second_brain", "brain.db");
+  return join(dataHome, "glia", "glia.db");
 }
 
 export function openDb(path: string): Database.Database {

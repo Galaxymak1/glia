@@ -22,6 +22,8 @@ const INJECTED_TAGS = [
   "ide_opened_file",
   "ide_selection",
   // What recall and brief return (src/recall.ts): claims served back must never be extracted again.
+  // brain-claims is the tag from before the rename to glia, still in transcripts on disk.
+  "glia-claims",
   "brain-claims",
 ];
 const INJECTED_OPENER = new RegExp(`<(${INJECTED_TAGS.join("|")})>`, "g");

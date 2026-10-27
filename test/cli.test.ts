@@ -15,12 +15,13 @@ const V = migrations.at(-1)!.version;
 
 const dir = mkdtempSync(join(tmpdir(), "brain-cli-"));
 // Never read the developer's own config file.
-const env = { ...process.env, BRAIN_CONFIG: join(dir, "no-config.json") };
+// XDG folders in the temp dir: the CLI moves legacy folders under them, never the real ones.
+const env = { ...process.env, GLIA_CONFIG: join(dir, "no-config.json"), XDG_DATA_HOME: join(dir, "xdg-data"), XDG_CONFIG_HOME: join(dir, "xdg-config") };
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const brain = (...args: string[]) =>
   execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", env });
 
-describe("brain init", () => {
+describe("glia init", () => {
   it("creates the database, then reports it up to date", () => {
     const db = join(dir, "nested", "brain.db");
     expect(brain("init", "--db", db)).toBe(`Created ${db} (schema v${V})\n`);
@@ -43,7 +44,7 @@ describe("brain init", () => {
   });
 });
 
-describe("brain scrub", () => {
+describe("glia scrub", () => {
   it("reports what it would redact without printing secrets or touching files", () => {
     const root = join(dir, "transcripts", "-home-me-proj");
     mkdirSync(join(root, "memory"), { recursive: true });
@@ -84,7 +85,7 @@ describe("brain scrub", () => {
   });
 });
 
-describe("brain ingest", () => {
+describe("glia ingest", () => {
   it("stores files once: a second run adds nothing", () => {
     const src = join(dir, "ingest-src");
     mkdirSync(src, { recursive: true });
@@ -118,7 +119,7 @@ describe("brain ingest", () => {
   });
 });
 
-describe("brain ingest of Claude Code projects", () => {
+describe("glia ingest of Claude Code projects", () => {
   const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
   const session = JSON.stringify({ type: "user", uuid: "u1", parentUuid: null, sessionId: S, message: { content: "hello" } }) + "\n";
   const makeProjects = (root: string) => {
@@ -140,7 +141,7 @@ describe("brain ingest of Claude Code projects", () => {
     const out = execFileSync(process.execPath, ["--import", tsx, join(process.cwd(), "src/cli.ts"), "ingest", "--db", db, "projects"], {
       cwd: root,
       encoding: "utf8",
-      env: { ...env, BRAIN_CONFIG: config },
+      env: { ...env, GLIA_CONFIG: config },
     });
     expect(out).toMatch(/^Stored 2 new files .*; 2 in excluded projects\n/);
     expect(out).toMatch(/\nParsed 1 sessions, 0 subagent transcripts, 0 memory files \(1 turns written, 0 removed\)/);
@@ -157,7 +158,7 @@ describe("brain ingest of Claude Code projects", () => {
     const config = join(dir, "zip-config.json");
     writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
     const db = join(dir, "zip-db", "brain.db");
-    const out = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(root, "projects")], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+    const out = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(root, "projects")], { encoding: "utf8", env: { ...env, GLIA_CONFIG: config } });
     expect(out).toMatch(/^Stored 2 new files .*; 3 in excluded projects\n/);
     expect(out).not.toMatch(/claude\.ai export/);
   });
@@ -173,7 +174,7 @@ describe("brain ingest of Claude Code projects", () => {
     writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
     const db = join(dir, "cc-db3", "brain.db");
     const run = (target: string) =>
-      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, target], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, target], { encoding: "utf8", env: { ...env, GLIA_CONFIG: config } });
     expect(run(join(backup, "-home-me-work-acme"))).toMatch(/^Stored 0 new files .*; 2 in excluded projects\n/);
     expect(run(join(backup, "lone", "-home-me-work-acme", `${S}.jsonl`))).toMatch(/^Stored 0 new files .*; 1 in excluded projects\n/);
   });
@@ -191,7 +192,7 @@ describe("brain ingest of Claude Code projects", () => {
     writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
     for (const target of [join(root, "projects"), mixed]) {
       const db = join(dir, `cc-db4-${target === mixed ? "mixed" : "tree"}`, "brain.db");
-      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, target], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, target], { encoding: "utf8", env: { ...env, GLIA_CONFIG: config } });
       const raw = join(dirname(db), "raw");
       const stored = readdirSync(raw, { recursive: true }).filter((f) => String(f).endsWith(".gz"));
       expect(stored.map((f) => gunzipSync(readFileSync(join(raw, String(f)))).toString("utf8")).some((c) => c.includes("acme"))).toBe(false);
@@ -205,7 +206,7 @@ describe("brain ingest of Claude Code projects", () => {
     writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
     const out = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", join(dir, "cc-db5", "brain.db"), join(root, "projects")], {
       encoding: "utf8",
-      env: { ...env, BRAIN_CONFIG: config },
+      env: { ...env, GLIA_CONFIG: config },
     });
     expect(out).toMatch(/^Stored 2 new files .*; 2 in excluded projects\n/); // only -home-me-work-acme's files
     expect(out).toMatch(/\nParsed 1 sessions/);
@@ -220,7 +221,7 @@ describe("brain ingest of Claude Code projects", () => {
     writeFileSync(config, JSON.stringify({ claudeCode: { exclude: ["-home-me-work-*"] } }));
     for (const folder of ["link", "spool"]) {
       const db = join(dir, `cc-db-${folder}`, "brain.db");
-      const run = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(root, folder)], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config } });
+      const run = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, join(root, folder)], { encoding: "utf8", env: { ...env, GLIA_CONFIG: config } });
       expect(run).toMatch(/2 in excluded projects/);
       expect(run).toMatch(/\nParsed 1 sessions/);
       const raw = join(dir, `cc-db-${folder}`, "raw");
@@ -231,7 +232,7 @@ describe("brain ingest of Claude Code projects", () => {
 });
 
 
-describe("brain index --claims", () => {
+describe("glia index --claims", () => {
   it("mirrors the vault into the claim tables and reports a broken file", () => {
     const db = join(dir, "claims", "brain.db");
     const vault = new Vault(join(dir, "claims", "vault"));
@@ -243,19 +244,19 @@ describe("brain index --claims", () => {
     writeFileSync(config, JSON.stringify({ embedding: { url: "http://127.0.0.1:9" } }));
     let out = "";
     try {
-      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "index", "--claims", "--db", db], { encoding: "utf8", env: { ...env, BRAIN_CONFIG: config }, stdio: "pipe" });
+      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "index", "--claims", "--db", db], { encoding: "utf8", env: { ...env, GLIA_CONFIG: config }, stdio: "pipe" });
     } catch (err) {
       const e = err as { status: number; stdout: string; stderr: string };
       expect(e.status).toBe(1);
       out = e.stdout + e.stderr;
     }
     expect(out).toContain("Claims: 2 new, 0 updated, 0 removed, 0 embedded");
-    expect(out).toMatch(/brain: claims\/2026\/clm_C\.md: no frontmatter/);
-    expect(out).toMatch(/brain: meaning index of claims not updated/);
+    expect(out).toMatch(/glia: claims\/2026\/clm_C\.md: no frontmatter/);
+    expect(out).toMatch(/glia: meaning index of claims not updated/);
   });
 });
 
-describe("brain extract", () => {
+describe("glia extract", () => {
   it("--dry-run reports what would be sent without calling the API", async () => {
     const dbPath = join(dir, "extract", "brain.db");
     const { openDb } = await import("../src/db.js");
@@ -276,26 +277,26 @@ describe("brain extract", () => {
 
   it("without a key, says where to put one", () => {
     const dbPath = join(dir, "extract", "brain.db");
-    expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "extract", "--db", dbPath], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "no-xdg") }, stdio: "pipe" })).toThrow(/ai_second_brain\/env: no ANTHROPIC_API_KEY/);
+    expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "extract", "--db", dbPath], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "no-xdg") }, stdio: "pipe" })).toThrow(/glia\/env: no ANTHROPIC_API_KEY/);
   });
 });
 
-describe("brain review", () => {
+describe("glia review", () => {
   it("--stats with no decisions says so", () => {
     expect(brain("review", "--stats", "--db", join(dir, "review", "brain.db"))).toBe("No review decisions yet.\n");
   });
 
   it("needs a terminal to triage", () => {
     expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "review", "--db", join(dir, "review", "brain.db")], { encoding: "utf8", env, stdio: "pipe" })).toThrow(
-      /brain review needs a terminal/,
+      /glia review needs a terminal/,
     );
   });
 });
 
-describe("brain audit and eval arms", () => {
+describe("glia audit and eval arms", () => {
   it("audit report on a fresh brain leaves the gate undecided", () => {
     const db = join(dir, "audit", "brain.db");
-    expect(brain("audit", "sample", "--db", db)).toBe("Opened 0 audit items; triage them with: brain review --audit\n");
+    expect(brain("audit", "sample", "--db", db)).toBe("Opened 0 audit items; triage them with: glia review --audit\n");
     expect(brain("audit", "report", "--db", db)).toBe(
       "Write precision: 0/0 (-); 0 edited, 0 retracted; 0 still open\nAI-origin claims auto-accepted: 0\n" +
         "Phase 1 gate (precision 80% or more, zero AI-origin auto-accepted): not decided (nothing judged yet)\n",

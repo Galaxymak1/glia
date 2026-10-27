@@ -1,6 +1,6 @@
-# AI Second Brain — Specification
+# glia — Specification
 
-2026-10-20 · @Kylian
+2026-10-20 · @Kylian · The project was named AI Second Brain (`ai_second_brain`, command `brain`) until 2026-10-27, when it became glia (command `glia`, npm `@galaxymak1/glia`).
 
 ## Overview
 
@@ -211,7 +211,7 @@ Each item shows the proposed statement, its origin, scope and validity, the reas
 ### Surfaces
 
 - **MCP App** widget inside claude.ai web and Desktop, opened by the `review` tool.
-- **CLI** (`brain review`) for keyboard-only triage in the terminal.
+- **CLI** (`glia review`) for keyboard-only triage in the terminal.
 - **Obsidian** for browsing and editing the vault directly; edits are picked up on the next index sync.
 
 ### Health metrics
@@ -368,19 +368,19 @@ Structured JSON logs, a `/health` endpoint, and a daily summary line in `log.md`
 
 The code is published under the Elastic License 2.0 (`LICENSE`, SPDX `Elastic-2.0`). Anyone may use, copy, modify and redistribute it, at home or at work, but may not provide it to third parties as a hosted or managed service. The author keeps the copyright and with it the right to offer a hosted service later; outside contributions are accepted only under a contributor agreement that preserves that right. All dependencies (better-sqlite3, sqlite-vec, the MCP SDK, fflate, zod) and the BGE-M3 weights are MIT or Apache-2.0, which allow this.
 
-Nothing personal lives in the repository: the database, raw evidence, evaluation questions and config sit under `~/.local/share/ai_second_brain/` and `~/.config/ai_second_brain/`.
+Nothing personal lives in the repository: the database, raw evidence, evaluation questions and config sit under `~/.local/share/glia/` and `~/.config/glia/`.
 
 ### Install paths
 
 | Path | For | Phase |
 | --- | --- | --- |
-| npm package: `npm i -g ai-second-brain`, then `brain init` | Anyone with Node 22 | Packaging |
-| Claude Code plugin bundling the MCP server, the SessionStart briefing hook and `/brain` commands | Claude Code users | Packaging |
-| Docker Compose (brain + Ollama) | The remote server on a VPS | 2 |
+| npm package: `npm i -g @galaxymak1/glia`, then `glia init` | Anyone with Node 22 | Packaging |
+| Claude Code plugin bundling the MCP server, the SessionStart briefing hook and `/glia:` commands | Claude Code users | Packaging |
+| Docker Compose (glia + Ollama) | The remote server on a VPS | 2 |
 
-### `brain init` and `brain doctor`
+### `glia init` and `glia doctor`
 
-`brain init` becomes a wizard that runs once and can be re-run safely:
+`glia init` becomes a wizard that runs once and can be re-run safely:
 
 1. Checks Node and creates or migrates the database.
 2. Finds Ollama and pulls the embedding model, or reports that search will be keyword-only.
@@ -388,15 +388,15 @@ Nothing personal lives in the repository: the database, raw evidence, evaluation
 4. Detects installed MCP clients (Claude Code, Claude Desktop, Zed) and registers the server in each, after confirmation.
 5. Installs the scheduled jobs and runs the first ingest and index.
 
-`brain doctor` checks each of these and prints the fix for whatever is broken.
+`glia doctor` checks each of these and prints the fix for whatever is broken.
 
 ### Scheduled jobs on every OS
 
-A single `brain daemon` runs the local jobs (transcript sweep, index, extraction submit and poll) on its own clock, so one mechanism works on Linux, macOS and Windows. `brain init` starts it at login through the platform's own service manager (systemd user unit, launchd agent, or a Windows scheduled task). It replaces the hand-written systemd user timer of phases 0 and 1.
+A single `glia daemon` runs the local jobs (transcript sweep, index, extraction submit and poll) on its own clock, so one mechanism works on Linux, macOS and Windows. `glia init` starts it at login through the platform's own service manager (systemd user unit, launchd agent, or a Windows scheduled task). It replaces the hand-written systemd user timer of phases 0 and 1.
 
 ### Embeddings without Ollama
 
-Ollama is the heaviest install step. A spike tests running the same BGE-M3 Q8_0 GGUF inside the brain's process (node-llama-cpp), with no separate server. If the vectors match Ollama's (cosine 0.999 or more) at an acceptable speed, in-process becomes the default and Ollama stays an option; otherwise Ollama stays and `brain init` installs the model.
+Ollama is the heaviest install step. A spike tests running the same BGE-M3 Q8_0 GGUF inside glia's own process (node-llama-cpp), with no separate server. If the vectors match Ollama's (cosine 0.999 or more) at an acceptable speed, in-process becomes the default and Ollama stays an option; otherwise Ollama stays and `glia init` installs the model.
 
 ### Platforms
 
@@ -410,7 +410,7 @@ Phase 0 comes first: cross-silo search over raw evidence plus the evaluation set
 
 If claims never beat raw search on the evaluation set, the project stops at phase 0 and still delivers a searchable record of every Claude conversation.
 
-The packaging phase sits between phases 1 and 2 and keeps their numbers. It turns the working system into something a stranger can install (see Packaging and license); its gate is a fresh Linux or macOS machine reaching a searchable brain through `brain init` in under 15 minutes, without reading the source.
+The packaging phase sits between phases 1 and 2 and keeps their numbers. It turns the working system into something a stranger can install (see Packaging and license); its gate is a fresh Linux or macOS machine reaching a searchable brain through `glia init` in under 15 minutes, without reading the source.
 
 The brain map in phase 4 draws the store as a network of neurons: each claim is a node, sized by how often it is recalled and faded when superseded; `edges` and shared evidence are the links between them, and sources and scopes form the clusters. It reads the existing tables and adds no new data.
 
@@ -427,4 +427,4 @@ These were unconfirmed or contradictory in the research and should be checked du
 - [ ] BGE-M3 query latency on the VPS CPU, and VPS RAM headroom.
 - [ ] Is static-header auth available to individual Pro or Max accounts? It would simplify single-user auth.
 - [ ] Working name for the project and the repository.
-- [ ] Can a Claude Code plugin ship native dependencies (better-sqlite3, sqlite-vec) on every platform, or must it call a globally installed `brain`?
+- [x] Can a Claude Code plugin ship native dependencies (better-sqlite3, sqlite-vec) on every platform, or must it call a globally installed `brain`? It calls a globally installed `glia` (Packaging plan, 2026-10-27).

@@ -55,7 +55,7 @@ describe("sessionOf", () => {
 describe("brain ingest with #nobrain", () => {
   const dir = mkdtempSync(join(tmpdir(), "brain-optout-"));
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
-  const env = { ...process.env, BRAIN_CONFIG: join(dir, "no-config.json") };
+  const env = { ...process.env, GLIA_CONFIG: join(dir, "no-config.json"), XDG_DATA_HOME: join(dir, "xdg-data"), XDG_CONFIG_HOME: join(dir, "xdg-config") };
   const ingest = (db: string, path: string) => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ingest", "--db", db, path], { encoding: "utf8", env });
   const S = "11111111-2222-3333-4444-555555555555";
   const OTHER = "66666666-7777-8888-9999-000000000000";

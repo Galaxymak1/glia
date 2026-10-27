@@ -117,7 +117,7 @@ export function resolveProposal(
     if (action === "merge") throw new Error("an audit item cannot be merged: accept, edit or reject it");
     // The file must still be the one indexed: an edit made since in Obsidian is never overwritten.
     const sha = claimFileSha(db, c.id);
-    if (action !== "accept" && !vault.isUnchanged(c, sha)) throw new Error(`${vault.claimPath(c)} changed on disk since it was indexed; fix it or run: brain index --claims`);
+    if (action !== "accept" && !vault.isUnchanged(c, sha)) throw new Error(`${vault.claimPath(c)} changed on disk since it was indexed; fix it or run: glia index --claims`);
     if (action === "accept") log("audit_ok", c.id);
     else if (action === "edit") {
       log("edit", c.id);
@@ -139,7 +139,7 @@ export function resolveProposal(
     if (!target) throw new Error(`no claim ${targetId} in the vault`);
     const r = addEvidence(target, c.evidence);
     const sha = claimFileSha(db, targetId);
-    if (r.added && !vault.isUnchanged(target, sha)) throw new Error(`${vault.claimPath(target)} changed on disk since it was indexed; fix it or run: brain index --claims`);
+    if (r.added && !vault.isUnchanged(target, sha)) throw new Error(`${vault.claimPath(target)} changed on disk since it was indexed; fix it or run: glia index --claims`);
     log("merge", targetId, { from: c.id, added: r.added });
     if (r.added) vault.writeClaim(r.claim, `evidence ${targetId} from ${sourcesOf(c)}`, { expectSha: sha });
     decided("merged");
@@ -217,7 +217,7 @@ export async function runReview(db: Database.Database, vault: Vault, io: ReviewI
           resolveProposal(db, vault, p.id, "merge", { mergeInto, shownAt, now: now() });
         } else resolveProposal(db, vault, p.id, action, { shownAt, now: now() });
       } catch (err) {
-        io.write(`brain: ${err instanceof Error ? err.message : String(err)}\n${HINT}\n`);
+        io.write(`glia: ${err instanceof Error ? err.message : String(err)}\n${HINT}\n`);
         continue;
       }
       if (action !== "snooze") decided++;

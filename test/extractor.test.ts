@@ -176,9 +176,9 @@ describe("extraction batch", () => {
 describe("anthropicApiKey", () => {
   it("reads the key from the brain's env file, never the shell", () => {
     const home = tmpDir("brain-xdg-");
-    mkdirSync(join(home, "ai_second_brain"));
-    writeFileSync(join(home, "ai_second_brain", "env"), "ANTHROPIC_API_KEY=sk-test-123\n");
+    mkdirSync(join(home, "glia"));
+    writeFileSync(join(home, "glia", "env"), "ANTHROPIC_API_KEY=sk-test-123\n");
     expect(anthropicApiKey({ XDG_CONFIG_HOME: home, ANTHROPIC_API_KEY: "from-shell" })).toBe("sk-test-123");
-    expect(() => anthropicApiKey({ XDG_CONFIG_HOME: tmpDir() })).toThrow(/ai_second_brain\/env/);
+    expect(() => anthropicApiKey({ XDG_CONFIG_HOME: tmpDir() })).toThrow(/glia\/env/);
   });
 });

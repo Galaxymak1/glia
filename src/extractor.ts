@@ -102,7 +102,7 @@ export function planExtraction(db: Database.Database, opts: { from?: string } = 
 /** Submits one batch over every source whose input changed; null job when there is nothing to send. */
 export async function submitExtraction(db: Database.Database, client: BatchClient, opts: { from?: string } = {}) {
   const running = runningJob(db);
-  if (running) throw new Error(`an extraction batch is still running (job ${running.id}, ${running.batch_id}); run: brain extract poll`);
+  if (running) throw new Error(`an extraction batch is still running (job ${running.id}, ${running.batch_id}); run: glia extract poll`);
   const sources = selectForExtraction(db, opts);
   const batch: BatchRequest[] = [];
   const payload: JobPayload = { requests: {} };

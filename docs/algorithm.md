@@ -1,6 +1,6 @@
-# How the brain works
+# How glia works
 
-A living description of the algorithm, updated by every work package that changes it. `SPEC.md` says what the brain should do; this file says what the code does today. Last updated by WP7 (#7).
+A living description of the algorithm, updated by every work package that changes it. `SPEC.md` says what glia should do; this file says what the code does today. Last updated by WP7 (#7).
 
 ## Pipeline
 
@@ -16,7 +16,7 @@ flowchart LR
   T --> C["chunk + header<br/>~512 tokens"]
   C --> O["BGE-M3 Q8_0<br/>(Ollama)"]
   O --> V[("chunks, chunks_vec")]
-  Q["brain search"] --> F["FTS5 bm25<br/>top 50 turns"]
+  Q["glia search"] --> F["FTS5 bm25<br/>top 50 turns"]
   Q --> K["query vector, KNN<br/>top 50 turns by best chunk"]
   T -.-> F
   V -.-> K
@@ -24,7 +24,7 @@ flowchart LR
   K --> R
 ```
 
-`brain ingest <path...>` runs the chain up to the turns; `brain index` embeds what is new or changed; `brain search <query>` reads both indexes. Every step can be re-run: same input, same database.
+`glia ingest <path...>` runs the chain up to the turns; `glia index` embeds what is new or changed; `glia search <query>` reads both indexes. Every step can be re-run: same input, same database.
 
 ## 1. Evidence store and scrubbing (WP2, WP3)
 
@@ -150,8 +150,8 @@ Before chunking, each `[tool_use <name>] <json>` line in a turn is cut to its fi
 - **Model:** BGE-M3 quantised to Q8_0 (`hf.co/gpustack/bge-m3-GGUF:Q8_0`, 634 MB), through Ollama. On sample turns its vectors have cosine 0.9993 to 0.9995 against F16. The laptop and the server must run this same file. Set by `embedding.model` and `embedding.url` in the config.
 - **No silent truncation.** Ollama cuts every input to 2,048 tokens unless `num_ctx` and `num_batch` are raised, and says nothing. Requests set both to 8,192 and pass `truncate: false`, so a too-long input is an error (HTTP 413), never a cut vector.
 - **Storage:** `chunks_vec` (sqlite-vec `vec0`, 1024 dims, cosine distance), with `model` and `dims` on every row. Deleting a chunk deletes its vector by trigger; deleting a turn deletes its chunks by foreign key.
-- **Incremental.** `brain index` hashes every turn's inputs and embeds only the turns whose hashes changed or whose vectors come from another model. A changed title therefore re-embeds the turns of its source. Turns that no longer have chunks (now injected, or emptied) lose them. Each turn is written in its own transaction once all its chunks are embedded, so an interrupted run keeps every turn it finished.
-- **Rebuild:** `brain index --rebuild` deletes every chunk and vector, then embeds everything again. Chunking is deterministic, so the inputs, and the results, are the same.
+- **Incremental.** `glia index` hashes every turn's inputs and embeds only the turns whose hashes changed or whose vectors come from another model. A changed title therefore re-embeds the turns of its source. Turns that no longer have chunks (now injected, or emptied) lose them. Each turn is written in its own transaction once all its chunks are embedded, so an interrupted run keeps every turn it finished.
+- **Rebuild:** `glia index --rebuild` deletes every chunk and vector, then embeds everything again. Chunking is deterministic, so the inputs, and the results, are the same.
 
 ## 6. Search (WP7, `src/search.ts`)
 

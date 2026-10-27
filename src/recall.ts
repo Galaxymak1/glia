@@ -1,5 +1,5 @@
 // Serving claims (#41, SPEC.md "MCP tools" and "Retrieval"): `recall` is hybrid search over claim
-// statements, `brief` a compact briefing. Both wrap what they return in <brain-claims>, which
+// statements, `brief` a compact briefing. Both wrap what they return in <glia-claims>, which
 // ingestion flags as injected, and log every claim served in `retrievals`, so recalled text that
 // comes back in a transcript is never extracted again.
 
@@ -7,7 +7,7 @@ import type Database from "better-sqlite3";
 import type { Embedder } from "./embed.js";
 import { ftsQuery, RRF_K } from "./search.js";
 
-export const CLAIMS_TAG = "brain-claims";
+export const CLAIMS_TAG = "glia-claims";
 /** Measured by #32 on these sources with Haiku's tokenizer; BGE-M3's is close (2.75). */
 export const BRIEF_CHARS_PER_TOKEN = 2.25;
 export const RECALL_LIMIT = 8;

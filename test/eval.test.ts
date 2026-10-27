@@ -28,9 +28,9 @@ const q = (id: string, category: Question["category"], where: Question["where"],
 const stream = (hits: number[], answer: string) =>
   [
     { type: "system", subtype: "init" },
-    { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "mcp__brain__search_evidence", input: { query: "x" } }] } },
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "mcp__glia__search_evidence", input: { query: "x" } }] } },
     { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: hits.map((h, i) => `${i + 1}. turn ${h} · [cai] T · assistant\n   snippet`).join("\n") }] } },
-    { type: "assistant", message: { content: [{ type: "tool_use", id: "t2", name: "mcp__brain__open_evidence", input: { id: hits[0] } }] } },
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "t2", name: "mcp__glia__open_evidence", input: { id: hits[0] } }] } },
     { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t2", content: [{ type: "text", text: "--- turn" }] }] } },
     { type: "result", subtype: "success", is_error: false, result: answer },
   ]
@@ -140,7 +140,7 @@ describe("runEval and the gate", () => {
     // Arm C answers "right" except for q1; it sees recall and brief only.
     const seen: string[][] = [];
     const withC: ClaudeRunner = async (args, o) => {
-      if (args.includes("stream-json") && args.join(" ").includes("mcp__brain__recall")) {
+      if (args.includes("stream-json") && args.join(" ").includes("mcp__glia__recall")) {
         seen.push(args);
         const prompt = args[args.indexOf("-p") + 1]!;
         return stream([], prompt.includes("question q1") ? "wrong" : "right");
@@ -155,7 +155,7 @@ describe("runEval and the gate", () => {
       await runArms(["B", "C"]);
       expect(seen).toHaveLength(5);
       for (const a of seen) {
-        expect(a[a.indexOf("--allowedTools") + 1]).toBe("mcp__brain__recall mcp__brain__brief");
+        expect(a[a.indexOf("--allowedTools") + 1]).toBe("mcp__glia__recall mcp__glia__brief");
         expect(a).toEqual(expect.arrayContaining(["--tools", "", "--strict-mcp-config", "--no-session-persistence"]));
         expect(a[a.indexOf("-p") + 1]).toContain("recall and brief");
       }

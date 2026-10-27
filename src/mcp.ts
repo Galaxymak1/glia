@@ -153,10 +153,10 @@ export function formatOpen(r: NonNullable<ReturnType<typeof openEvidence>>): str
 /**
  * With a vault, every recall and brief first brings the claim rows in line with its files, so a
  * claim retracted or corrected in Obsidian is served as it now reads (statements edited since are
- * found by keyword until the next `brain index --claims` embeds them).
+ * found by keyword until the next `glia index --claims` embeds them).
  */
 export function createMcpServer(db: Database.Database, embedder: Embedder | null, vault?: Vault): McpServer {
-  const server = new McpServer({ name: "ai-second-brain", version: "0.0.0" }, { capabilities: { tools: {} } });
+  const server = new McpServer({ name: "glia", version: "0.0.0" }, { capabilities: { tools: {} } });
 
   server.registerTool(
     "search_evidence",

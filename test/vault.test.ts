@@ -105,8 +105,8 @@ describe("vault", () => {
     process.env.GIT_CONFIG_GLOBAL = join(home, ".gitconfig");
     const v = new Vault(tmpDir("brain-vault-"));
     expect(v.writeClaim(claimFixture(), "accept")).toMatch(/^[0-9a-f]{40}$/);
-    expect(git(v.dir, "log", "-1", "--format=%an <%ae>")).toBe("brain <brain@localhost>");
-    expect(readFileSync(join(v.dir, ".git", "config"), "utf8")).not.toContain("brain@localhost");
+    expect(git(v.dir, "log", "-1", "--format=%an <%ae>")).toBe("glia <glia@localhost>");
+    expect(readFileSync(join(v.dir, ".git", "config"), "utf8")).not.toContain("glia@localhost");
   });
 });
 

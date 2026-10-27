@@ -27,9 +27,10 @@ import { reviewStats, runReview, type ReviewIo } from "./review.js";
 import { auditReport, formatAudit, sampleAudit } from "./audit.js";
 import { createInterface, emitKeypressEvents } from "node:readline";
 import { Vault, vaultDirFor } from "./vault.js";
+import { moveLegacyPaths } from "./legacy.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
-const USAGE = `Usage: brain <command> [options]
+const USAGE = `Usage: glia <command> [options]
 
 Commands:
   init                          Create the database, or apply pending migrations
@@ -45,7 +46,7 @@ Commands:
                                 their statements; a file that does not parse is reported and skipped
   extract [--from <date>]       Send every source whose turns changed since the last run to Claude Haiku 5.5
                                 (Batch API) for claim extraction; --dry-run reports the size and cost only.
-                                The key is read from ~/.config/ai_second_brain/env (ANTHROPIC_API_KEY)
+                                The key is read from ~/.config/glia/env (ANTHROPIC_API_KEY)
   extract poll [--wait]         Read finished batches into candidate claims; --wait polls every minute
                                 until no batch is running
   review [--audit]              Triage the review inbox one key at a time: a accept, e edit, m merge,
@@ -53,7 +54,7 @@ Commands:
                                 the claims picked for audit only
   review --stats                Weekly rejection rate and median decision time
   audit sample [--n 50]         Open audit items for auto-accepted claims never audited, for the
-                                write-precision audit; triage them with brain review --audit
+                                write-precision audit; triage them with glia review --audit
   audit report                  Write precision of the audit, AI-origin claims auto-accepted, the gate
   search <query...>             Hybrid keyword + meaning search over turns
   mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
@@ -66,7 +67,7 @@ Commands:
                                 Record a verdict checked by hand; it overrides Claude's
 
 Options:
-  --db <path>   Database file (default: $BRAIN_DB, else ~/.local/share/ai_second_brain/brain.db)
+  --db <path>   Database file (default: $GLIA_DB, else ~/.local/share/glia/glia.db)
   --show        With scrub: list each finding with its file, line and a masked preview
   --limit <n>   With search: number of results (default 10)
   --injected    With search: include text the harness injected (reminders, hook context)
@@ -77,7 +78,7 @@ Options:
   --only <ids>         With eval run: only these question ids, comma-separated
   --arms <list>        With eval run: the tool arms to run (default B,C)
 
-Config: $BRAIN_CONFIG, else ~/.config/ai_second_brain/config.json
+Config: $GLIA_CONFIG, else ~/.config/glia/config.json
   {"claudeCode": {"exclude": ["-home-me-work-*"]}}   project folders never stored or parsed
   {"embedding": {"url": "http://localhost:11434", "model": "hf.co/gpustack/bge-m3-GGUF:Q8_0"}}
   -h, --help    Show this help`;
@@ -116,7 +117,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
     const notIngested: Record<string, number> = {};
     const fail = (message: string) => {
       failed++;
-      console.error(`brain: ${message}`);
+      console.error(`glia: ${message}`);
     };
     // fs messages quote the raw path; report the scrubbed path and the error code instead.
     const fsError = (p: string, err: unknown) => `${scrubPath(p)}: ${(err as NodeJS.ErrnoException).code ?? "unreadable"}`;
@@ -297,7 +298,7 @@ async function index(dbPath: string, config: Config, rebuild: boolean): Promise<
         last = Date.now();
         const secs = (Date.now() - started) / 1000;
         const eta = done ? Math.round(((total - done) * secs) / done / 60) : 0;
-        console.error(`brain: embedded ${done}/${total} chunks (${Math.round(embedder.tokens / secs)} tokens/s, about ${eta} min left)`);
+        console.error(`glia: embedded ${done}/${total} chunks (${Math.round(embedder.tokens / secs)} tokens/s, about ${eta} min left)`);
       },
     });
     const secs = (Date.now() - started) / 1000;
@@ -319,8 +320,8 @@ async function indexClaims(dbPath: string, config: Config): Promise<number> {
     const { url, model } = embeddingSettings(config);
     const r = await syncClaims(db, new Vault(vaultDirFor(dbPath)), new OllamaEmbedder(model, url));
     console.log(`Claims: ${r.inserted} new, ${r.updated} updated, ${r.removed} removed, ${r.embedded} embedded`);
-    for (const e of r.errors) console.error(`brain: ${scrubText(e).value}`);
-    if (r.embedError) console.error(`brain: meaning index of claims not updated (${r.embedError}); keyword search still finds them`);
+    for (const e of r.errors) console.error(`glia: ${scrubText(e).value}`);
+    if (r.embedError) console.error(`glia: meaning index of claims not updated (${r.embedError}); keyword search still finds them`);
     return r.errors.length ? 1 : 0;
   } finally {
     db.close();
@@ -349,8 +350,8 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
         const { url, model } = embeddingSettings(loadConfig());
         const vault = new Vault(vaultDirFor(dbPath));
         const d = await dedupCandidates(db, vault, new OllamaEmbedder(model, url));
-        for (const e of d.syncErrors) console.error(`brain: ${scrubText(e).value}`);
-        if (d.held) console.error(`brain: meaning index unavailable; ${d.held} candidates held until it is back (run: brain extract poll)`);
+        for (const e of d.syncErrors) console.error(`glia: ${scrubText(e).value}`);
+        if (d.held) console.error(`glia: meaning index unavailable; ${d.held} candidates held until it is back (run: glia extract poll)`);
         if (d.previouslyRejected) console.log(`${d.previouslyRejected} candidates dropped: a rewording of a statement you rejected`);
         const merged = d.merged.intoClaims + d.merged.intoProposals + d.merged.intoCandidates;
         if (merged || d.similar) console.log(`Deduplicated: ${merged} merged (${d.merged.intoClaims} into claims, ${d.merged.intoProposals} into proposals), ${d.similar} similar to a claim${d.exactOnly ? "; meaning index unavailable, exact matches only" : ""}`);
@@ -368,7 +369,7 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
       }
     }
     if (args.length) {
-      console.error(`brain extract takes no arguments but poll.\n\n${USAGE}`);
+      console.error(`glia extract takes no arguments but poll.\n\n${USAGE}`);
       return 1;
     }
     if (values["dry-run"]) {
@@ -383,7 +384,7 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
     }
     const r = await submitExtraction(db, anthropicBatchClient(anthropicApiKey()), { from: values.from });
     if (r.jobId === null) console.log("Nothing new to extract.");
-    else console.log(`Submitted job ${r.jobId}: ${r.sources} sources in ${r.requests} requests, ${r.inputTokens} input tokens; run: brain extract poll --wait`);
+    else console.log(`Submitted job ${r.jobId}: ${r.sources} sources in ${r.requests} requests, ${r.inputTokens} input tokens; run: glia extract poll --wait`);
     return 0;
   } finally {
     db.close();
@@ -444,11 +445,11 @@ async function review(dbPath: string, values: { stats?: boolean; audit?: boolean
       return 0;
     }
     if (!process.stdin.isTTY) {
-      console.error("brain review needs a terminal (it reads single keys); --stats works anywhere");
+      console.error("glia review needs a terminal (it reads single keys); --stats works anywhere");
       return 1;
     }
     const vault = new Vault(vaultDirFor(dbPath));
-    for (const e of (await syncClaims(db, vault, null)).errors) console.error(`brain: ${scrubText(e).value}`);
+    for (const e of (await syncClaims(db, vault, null)).errors) console.error(`glia: ${scrubText(e).value}`);
     expireProposals(db, vault);
     const io = terminalIo();
     try {
@@ -470,14 +471,14 @@ function audit(dbPath: string, args: string[], values: { n?: string }): number {
     if (args[0] === "sample") {
       const n = Number(values.n ?? 50);
       if (!Number.isInteger(n) || n < 1) throw new Error("--n must be a positive whole number");
-      console.log(`Opened ${sampleAudit(db, new Vault(vaultDirFor(dbPath)), n)} audit items; triage them with: brain review --audit`);
+      console.log(`Opened ${sampleAudit(db, new Vault(vaultDirFor(dbPath)), n)} audit items; triage them with: glia review --audit`);
       return 0;
     }
     if (args[0] === "report") {
       console.log(formatAudit(auditReport(db)));
       return 0;
     }
-    console.error(`brain audit needs: sample | report\n\n${USAGE}`);
+    console.error(`glia audit needs: sample | report\n\n${USAGE}`);
     return 1;
   } finally {
     db.close();
@@ -490,10 +491,10 @@ async function searchCommand(dbPath: string, config: Config, query: string, limi
     migrate(db);
     const { url, model } = embeddingSettings(config);
     const result = await search(db, new OllamaEmbedder(model, url, 120_000), query, { limit, includeInjected });
-    if (result.meaningError) console.error(`brain: meaning search unavailable (${result.meaningError}); keyword results only`);
+    if (result.meaningError) console.error(`glia: meaning search unavailable (${result.meaningError}); keyword results only`);
     const status = indexStatus(db, model);
-    if (status.missing) console.error(`brain: ${status.missing} turns are not in the meaning index yet; run: brain index`);
-    if (status.otherModel) console.error(`brain: ${status.otherModel} chunks were embedded with another model and are ignored; run: brain index`);
+    if (status.missing) console.error(`glia: ${status.missing} turns are not in the meaning index yet; run: glia index`);
+    if (status.otherModel) console.error(`glia: ${status.otherModel} chunks were embedded with another model and are ignored; run: glia index`);
     if (json) {
       console.log(JSON.stringify(result.hits, null, 2));
       return 0;
@@ -518,7 +519,7 @@ function mcp(dbPath: string, config: Config): number {
   const { url, model } = embeddingSettings(config);
   const embedder = new OllamaEmbedder(model, url, 120_000);
   const handle = serveStdio(() => createMcpServer(db, embedder, new Vault(vaultDirFor(dbPath))), {
-    onerror: (err) => console.error(`brain mcp: ${err.message}`),
+    onerror: (err) => console.error(`glia mcp: ${err.message}`),
   });
   // A search can still be waiting on Ollama when the client leaves: nobody will read its answer,
   // so exit once the connection is closed instead of keeping the database open for it.
@@ -552,9 +553,9 @@ async function evalCommand(
       if (!questions.length) throw new Error(`no questions to run in ${questionsPath}`);
       const armAPath = values["arm-a"] ?? join(evalDir, "arm-a.jsonl");
       const armA = existsSync(armAPath) ? parseArmA(readFileSync(armAPath, "utf8")) : new Map<string, string>();
-      if (!armA.size) console.error(`brain: no arm A answers (${armAPath}); the gate's rules 1 and 2 stay undecided`);
-      console.error(`brain: running ${questions.length} questions (arm A answers for ${questions.filter((q) => armA.has(q.id)).length})`);
-      // The same server this CLI runs as `brain mcp`, started the way this process was (node or tsx).
+      if (!armA.size) console.error(`glia: no arm A answers (${armAPath}); the gate's rules 1 and 2 stay undecided`);
+      console.error(`glia: running ${questions.length} questions (arm A answers for ${questions.filter((q) => armA.has(q.id)).length})`);
+      // The same server this CLI runs as `glia mcp`, started the way this process was (node or tsx).
       const mcpCommand = [process.execPath, ...process.execArgv, process.argv[1]!, "mcp", "--db", resolve(dbPath)];
       const runId = await runEval(db, {
         questions,
@@ -564,7 +565,7 @@ async function evalCommand(
         judgeModel: values["judge-model"] ?? "sonnet",
         mcpCommand,
         arms: [...new Set(arms)] as ToolArm[],
-        onProgress: (line) => console.error(`brain: ${line}`),
+        onProgress: (line) => console.error(`glia: ${line}`),
       });
       console.log(formatEvalReport(evalReport(db, runId), false));
       return 0;
@@ -579,7 +580,7 @@ async function evalCommand(
       console.log(`Run ${rest[0]}, ${rest[1]}, arm ${rest[2]}: ${rest[3]} (checked by hand)`);
       return 0;
     }
-    console.error(`brain eval needs: run | report [run] | verify <run> <question> <A|B|C> <correct|incorrect>\n\n${USAGE}`);
+    console.error(`glia eval needs: run | report [run] | verify <run> <question> <A|B|C> <correct|incorrect>\n\n${USAGE}`);
     return 1;
   } finally {
     db.close();
@@ -614,6 +615,8 @@ async function main(argv: string[]): Promise<number> {
       help: { type: "boolean", short: "h" },
     },
   });
+  // An explicit --db is the user's own path: the folders from before the rename are left alone then.
+  if (values.db === undefined) moveLegacyPaths();
   const [command, ...args] = positionals;
   if (values.help) {
     console.log(USAGE);
@@ -629,14 +632,14 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     case "scrub":
       if (!values["dry-run"]) {
-        console.error("brain scrub needs --dry-run: scrubbed copies are written by ingest once the evidence store (#2) lands.");
+        console.error("glia scrub needs --dry-run: scrubbed copies are written by ingest once the evidence store (#2) lands.");
         return 1;
       }
       console.log(formatReport(scanPaths(args.length ? args : [defaultTranscriptsDir()]), values.show ?? false));
       return 0;
     case "ingest":
       if (!args.length) {
-        console.error(`brain ingest needs at least one path.\n\n${USAGE}`);
+        console.error(`glia ingest needs at least one path.\n\n${USAGE}`);
         return 1;
       }
       return ingest(values.db ?? defaultDbPath(), args, loadConfig());
@@ -652,7 +655,7 @@ async function main(argv: string[]): Promise<number> {
     case "search": {
       const limit = Number(values.limit ?? 10);
       if (!args.length || !Number.isInteger(limit) || limit < 1) {
-        console.error(`brain search needs a query, and --limit a positive whole number.\n\n${USAGE}`);
+        console.error(`glia search needs a query, and --limit a positive whole number.\n\n${USAGE}`);
         return 1;
       }
       return searchCommand(values.db ?? defaultDbPath(), loadConfig(), args.join(" "), limit, values.injected ?? false, values.json ?? false);
@@ -672,7 +675,7 @@ main(process.argv.slice(2)).then(
     process.exitCode = code;
   },
   (err) => {
-    console.error(`brain: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`glia: ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
   },
 );

@@ -104,12 +104,12 @@ export const runClaude: ClaudeRunner = (args, { cwd, timeoutMs }) =>
     });
   });
 
-const ARM_B_TOOLS = ["mcp__brain__search_evidence", "mcp__brain__open_evidence"];
-const ARM_C_TOOLS = ["mcp__brain__recall", "mcp__brain__brief"];
+const ARM_B_TOOLS = ["mcp__glia__search_evidence", "mcp__glia__open_evidence"];
+const ARM_C_TOOLS = ["mcp__glia__recall", "mcp__glia__brief"];
 export type ToolArm = "B" | "C";
 
 /**
- * Only the brain tools: no built-in tool (no file reads, no shell), no other MCP server, no user
+ * Only the glia tools: no built-in tool (no file reads, no shell), no other MCP server, no user
  * settings (hooks, plugins), no CLAUDE.md (an empty working folder), and no session file, so the
  * run never lands in ~/.claude/projects and is never ingested back as evidence.
  */
@@ -229,7 +229,7 @@ export interface RunOptions {
   armA: Map<string, string>;
   model: string;
   judgeModel: string;
-  /** The command that starts the brain MCP server, as [executable, ...args]. */
+  /** The command that starts the glia MCP server, as [executable, ...args]. */
   mcpCommand: string[];
   /** The tool arms to run: B (evidence tools), C (claim tools). Default: B only. */
   arms?: ToolArm[];
@@ -244,10 +244,10 @@ export const questionsSha256 = sha256;
 /** Runs every question through the tool arms, judges them and arm A, stores the run; returns its id. */
 export async function runEval(db: Database.Database, opts: RunOptions, runner: ClaudeRunner = runClaude): Promise<number> {
   const timeoutMs = opts.timeoutMs ?? 300_000;
-  const work = mkdtempSync(join(tmpdir(), "brain-eval-"));
+  const work = mkdtempSync(join(tmpdir(), "glia-eval-"));
   const mcpConfig = join(work, "mcp.json");
   const [command, ...args] = opts.mcpCommand;
-  writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { brain: { command, args } } }));
+  writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { glia: { command, args } } }));
   const runId = Number(
     db
       .prepare("INSERT INTO eval_runs (started_at, questions_sha256, questions, model, judge_model, base_url) VALUES (?, ?, ?, ?, ?, ?)")
