@@ -59,7 +59,7 @@ export function claimFixture(over: Partial<Claim> = {}): Claim {
     statement_lang: "fr",
     origin: "user_stated",
     evidence: [{ source: "cc:s1", turn: "u1", quote: "on part sur SQLite, pas Postgres", quote_sha256: createHash("sha256").update("on part sur SQLite, pas Postgres").digest("hex") }],
-    extractor: { model: "claude-haiku-5-5", prompt: "extract@v2", batch: "msgbatch_1" },
+    extractor: { model: "claude-haiku-5-5", prompt: "extract@v3", batch: "msgbatch_1" },
     confidence: 0.86,
     valid_from: "2026-10",
     valid_from_precision: "month",

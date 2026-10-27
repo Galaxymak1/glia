@@ -7,7 +7,7 @@ import { z } from "zod";
 import { embedView } from "./chunk.js";
 import { splitInjected } from "./enrich.js";
 
-export const EXTRACT_PROMPT_VERSION = "extract@v2";
+export const EXTRACT_PROMPT_VERSION = "extract@v3";
 export const EXTRACT_MODEL = "claude-haiku-5-5";
 
 export const CLAIM_KINDS = ["profile", "preference", "project_fact", "decision", "lesson", "procedure"] as const;
@@ -72,6 +72,7 @@ Rules:
 - Dates: resolve relative time ("depuis mars", "last week", "next year") against the timestamp of the turn that says it, not today. Set valid_from_precision to how precise the result is; use unknown with a null valid_from when nothing dates the claim.
 - When the time words give only a month or a year ("depuis mars", "in 2024", "last summer"), use that precision (month, year, approx); use day only when the day is known.
 - Scope: project:<slug> when the claim is about one project (a short lowercase slug from its name), global when it is about the user in general, context:<tag> for a recurring situation. A hobby or a recurring situation is context:<tag>, never project:<slug>; project: is for something the user builds or runs.
+- When <source> carries a scope, use the scope given on <source> for facts about that project, never another slug for it.
 - sensitivity is sensitive for health, money, relationships, legal matters, or anything about other identifiable people.
 - confidence: 0.9 or more only for a clear statement by the user; lower for hedged, hypothetical or old statements.`;
 
@@ -86,6 +87,8 @@ export interface RenderableSource {
   kind: string;
   title: string | null;
   created_at: string | null;
+  /** The project the source belongs to, from its folder (src/projects.ts); absent when unknown. */
+  scope?: string | null;
 }
 
 /**
@@ -99,7 +102,7 @@ export function extractView(text: string): string {
 /** The user message of one extraction request: the source's header, then each turn under its id. */
 export function renderSource(source: RenderableSource, turns: SourceTurn[]): string {
   const attr = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-  const head = `<source kind="${source.kind}" title="${attr(source.title ?? "")}" created="${source.created_at ?? ""}">`;
+  const head = `<source kind="${source.kind}" title="${attr(source.title ?? "")}" created="${source.created_at ?? ""}"${source.scope ? ` scope="${attr(source.scope)}"` : ""}>`;
   const body = turns.map((t) => `<turn id="${t.ref}" role="${t.role}" ts="${t.ts ?? ""}">\n${t.text}\n</turn>`);
   return [head, ...body, "</source>"].join("\n");
 }

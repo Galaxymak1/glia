@@ -4,7 +4,9 @@
 
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
+import type { Config } from "./config.js";
 import { extractView, type RenderableSource } from "./extractPrompt.js";
+import { scopeForSource } from "./projects.js";
 import { scrubText } from "./scrub.js";
 
 /** Artifacts (caa) are Claude's own output: nothing in them is the user's to claim. */
@@ -58,15 +60,16 @@ export function requestText(text: string, recalled: string[]): string {
 }
 
 /** Sources whose extraction input changed since they were last submitted, with their turns. */
-export function selectForExtraction(db: Database.Database, opts: { from?: string } = {}): SelectedSource[] {
+export function selectForExtraction(db: Database.Database, opts: { from?: string; config?: Config } = {}): SelectedSource[] {
   const recalled = recalledStatements(db);
+  const config = opts.config ?? { claudeCode: { exclude: [] } };
   const sources = db
     .prepare(
-      `SELECT s.id, s.kind, s.title, s.created_at, e.input_sha256 AS last FROM sources s LEFT JOIN extraction_state e ON e.source_id = s.id
+      `SELECT s.id, s.kind, s.title, s.created_at, s.cwd, s.project_hint, e.input_sha256 AS last FROM sources s LEFT JOIN extraction_state e ON e.source_id = s.id
        WHERE s.excluded = 0 AND s.kind IN (${EXTRACT_KINDS.map(() => "?").join(", ")}) AND (? IS NULL OR s.updated_at >= ?)
        ORDER BY s.id`,
     )
-    .all(...EXTRACT_KINDS, opts.from ?? null, opts.from ?? null) as { id: number; kind: string; title: string | null; created_at: string | null; last: string | null }[];
+    .all(...EXTRACT_KINDS, opts.from ?? null, opts.from ?? null) as { id: number; kind: string; title: string | null; created_at: string | null; cwd: string | null; project_hint: string | null; last: string | null }[];
   const turnsOf = db.prepare(
     `SELECT id, role, ts, text FROM turns WHERE source_id = ? AND is_injected = 0 AND is_sidechain = 0 AND role <> 'tool' ORDER BY ts, id`,
   );
@@ -83,7 +86,7 @@ export function selectForExtraction(db: Database.Database, opts: { from?: string
     if (!turns.length) continue;
     const inputSha256 = hash.digest("hex");
     if (inputSha256 === s.last) continue;
-    picked.push({ sourceId: s.id, inputSha256, source: { kind: s.kind, title: s.title, created_at: s.created_at }, turns });
+    picked.push({ sourceId: s.id, inputSha256, source: { kind: s.kind, title: s.title, created_at: s.created_at, scope: scopeForSource({ cwd: s.cwd, git_remote: null, project_hint: s.project_hint }, config) }, turns });
   }
   return picked;
 }

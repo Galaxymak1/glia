@@ -5,6 +5,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type Database from "better-sqlite3";
+import type { Config } from "./config.js";
 import { cutRequests, type ExtractionRequest, forgetSubmitted, markSubmitted, MAX_REQUEST_CHARS, selectForExtraction } from "./extractInput.js";
 import { EXTRACT_MODEL, EXTRACT_PROMPT_VERSION, EXTRACT_SYSTEM, ExtractionSchema, renderSource } from "./extractPrompt.js";
 
@@ -93,14 +94,14 @@ const runningJob = (db: Database.Database) =>
   db.prepare("SELECT id, batch_id FROM jobs WHERE type = 'extract' AND state = 'running' ORDER BY id LIMIT 1").get() as { id: number; batch_id: string } | undefined;
 
 /** Every request the next submit would send, cut by characters only (no API call): what `--dry-run` reports. */
-export function planExtraction(db: Database.Database, opts: { from?: string } = {}) {
+export function planExtraction(db: Database.Database, opts: { from?: string; config?: Config } = {}) {
   const sources = selectForExtraction(db, opts);
   const requests = sources.flatMap((s) => cutRequests(s.sourceId, s.source, s.turns));
   return { sources, requests };
 }
 
 /** Submits one batch over every source whose input changed; null job when there is nothing to send. */
-export async function submitExtraction(db: Database.Database, client: BatchClient, opts: { from?: string } = {}) {
+export async function submitExtraction(db: Database.Database, client: BatchClient, opts: { from?: string; config?: Config } = {}) {
   const running = runningJob(db);
   if (running) throw new Error(`an extraction batch is still running (job ${running.id}, ${running.batch_id}); run: glia extract poll`);
   const sources = selectForExtraction(db, opts);

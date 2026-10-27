@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -30,6 +30,7 @@ import { auditReport, formatAudit, sampleAudit } from "./audit.js";
 import { createInterface, emitKeypressEvents } from "node:readline";
 import { Vault, vaultDirFor } from "./vault.js";
 import { moveLegacyPaths } from "./legacy.js";
+import { sessionStartHook } from "./hooks.js";
 import { acquireLock, daemonLogger, localJobs, runOnce } from "./daemon.js";
 import { startScheduler } from "./scheduler.js";
 import { installService, type Platform, serviceActive, type ServiceDeps, uninstallService } from "./service.js";
@@ -66,6 +67,8 @@ Commands:
                                 --once runs every due job once and exits
   daemon install | uninstall | status
                                 Start the daemon at login (systemd, launchd or a Windows task)
+  hook session-start            For Claude Code's SessionStart hook: reads the hook JSON on stdin,
+                                prints the briefing for the project it opens in
   mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
   eval run [--arms B,C]         Answer every evaluation question with claude -p: arm B with the evidence
                                 tools (raw search), arm C with the claim tools (recall and brief); judge
@@ -342,7 +345,7 @@ const CHARS_PER_TOKEN = 2.25;
 const BATCH_INPUT_PER_MTOK = 0.05;
 const POLL_MS = 60_000;
 
-async function extract(dbPath: string, args: string[], values: { from?: string; "dry-run"?: boolean; wait?: boolean }): Promise<number> {
+async function extract(dbPath: string, args: string[], values: { from?: string; "dry-run"?: boolean; wait?: boolean }, config: Config): Promise<number> {
   const db = openDb(dbPath);
   try {
     migrate(db);
@@ -382,7 +385,7 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
       return 1;
     }
     if (values["dry-run"]) {
-      const { sources, requests } = planExtraction(db, { from: values.from });
+      const { sources, requests } = planExtraction(db, { from: values.from, config });
       const chars = requests.reduce((n, r) => n + r.turns.reduce((m, t) => m + t.text.length, 0), 0);
       const tokens = Math.round(chars / CHARS_PER_TOKEN);
       console.log(
@@ -391,7 +394,7 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
       );
       return 0;
     }
-    const r = await submitExtraction(db, anthropicBatchClient(anthropicApiKey()), { from: values.from });
+    const r = await submitExtraction(db, anthropicBatchClient(anthropicApiKey()), { from: values.from, config });
     if (r.jobId === null) console.log("Nothing new to extract.");
     else console.log(`Submitted job ${r.jobId}: ${r.sources} sources in ${r.requests} requests, ${r.inputTokens} input tokens; run: glia extract poll --wait`);
     return 0;
@@ -636,6 +639,33 @@ async function daemonService(action: "install" | "uninstall" | "status"): Promis
   return (await serviceActive(deps)) ? 0 : 1;
 }
 
+/** `glia hook session-start`: always exits 0 and prints nothing when there is nothing to say. */
+async function sessionStartCommand(dbPath: string, config: Config): Promise<number> {
+  try {
+    let stdin = "";
+    for await (const chunk of process.stdin) stdin += chunk;
+    const cwd = (JSON.parse(stdin || "{}") as { cwd?: unknown }).cwd;
+    if (typeof cwd !== "string" || !existsSync(dbPath)) return 0;
+    const db = openDb(dbPath);
+    try {
+      const gitRemote = (dir: string) => {
+        try {
+          return execFileSync("git", ["-C", dir, "remote", "get-url", "origin"], { encoding: "utf8", timeout: 1000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+        } catch {
+          return null;
+        }
+      };
+      const out = sessionStartHook({ cwd }, { db, config, gitRemote });
+      if (out) process.stdout.write(`${out}\n`);
+    } finally {
+      db.close();
+    }
+  } catch {
+    // a hook never fails the session
+  }
+  return 0;
+}
+
 /** `glia daemon`: the local jobs on their own clock, one daemon per machine. */
 async function daemon(dbPath: string, config: Config, once: boolean): Promise<number> {
   const dataDir = dirname(resolve(dbPath));
@@ -740,7 +770,7 @@ async function main(argv: string[]): Promise<number> {
     case "review":
       return review(values.db ?? defaultDbPath(), values);
     case "extract":
-      return extract(values.db ?? defaultDbPath(), args, values);
+      return extract(values.db ?? defaultDbPath(), args, values, loadConfig());
     case "search": {
       const limit = Number(values.limit ?? 10);
       if (!args.length || !Number.isInteger(limit) || limit < 1) {
@@ -756,6 +786,12 @@ async function main(argv: string[]): Promise<number> {
         return 1;
       }
       return daemon(values.db ?? defaultDbPath(), loadConfig(), values.once ?? false);
+    case "hook":
+      if (args[0] !== "session-start") {
+        console.error(`glia hook needs: session-start\n\n${USAGE}`);
+        return 1;
+      }
+      return sessionStartCommand(values.db ?? defaultDbPath(), loadConfig());
     case "mcp":
       return mcp(values.db ?? defaultDbPath(), loadConfig());
     case "eval":

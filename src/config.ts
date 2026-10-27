@@ -15,6 +15,12 @@ export interface Config {
   };
   /** The Ollama server and model of the meaning index; defaults in `embeddingSettings`. */
   embedding?: { url?: string; model?: string };
+  /**
+   * Project folders and git remotes that belong to one project: slug → cwd prefixes
+   * (`/home/me/dev/app`) or remotes (`github.com/me/app`). A folder with no entry is the project
+   * named by its git remote's repo, else by its own name.
+   */
+  projects?: Record<string, string[]>;
   /** `glia daemon`: the folders its sweep ingests (default: ~/.claude/projects). */
   daemon?: { paths?: string[] };
 }
@@ -55,10 +61,16 @@ export function loadConfig(path = defaultConfigPath()): Config {
   if (paths !== undefined && (!Array.isArray(paths) || !paths.every((p) => typeof p === "string"))) {
     throw new Error(`${path}: daemon.paths must be a list of strings`);
   }
+  const projects = (raw as { projects?: unknown })?.projects;
+  if (projects !== undefined) {
+    const ok = typeof projects === "object" && projects !== null && !Array.isArray(projects) && Object.values(projects).every((v) => Array.isArray(v) && v.every((x) => typeof x === "string"));
+    if (!ok) throw new Error(`${path}: projects must map a project name to a list of folders or remotes`);
+  }
   return {
     claudeCode: { exclude },
     embedding: { url: url as string | undefined, model: model as string | undefined },
     ...(paths ? { daemon: { paths: paths as string[] } } : {}),
+    ...(projects ? { projects: projects as Record<string, string[]> } : {}),
   };
 }
 

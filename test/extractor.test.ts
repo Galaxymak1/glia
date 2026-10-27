@@ -102,7 +102,7 @@ describe("extraction batch", () => {
     fake.ended.set("msgbatch_1", { [`s${s1}-c1`]: ok([claimOut(), claimOut()]) });
     await pollExtraction(db, fake);
     expect(candidates().every((r) => r.prompt === EXTRACT_PROMPT_VERSION && r.model === EXTRACT_MODEL && r.batch_id === "msgbatch_1" && r.source_id === s1)).toBe(true);
-    expect(EXTRACT_PROMPT_VERSION).toBe("extract@v2");
+    expect(EXTRACT_PROMPT_VERSION).toBe("extract@v3");
   });
 
   it("a poll before the batch ends changes nothing", async () => {
