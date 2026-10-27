@@ -14,7 +14,7 @@ export interface Config {
     exclude: string[];
   };
   /** The Ollama server and model of the meaning index; defaults in `embeddingSettings`. */
-  embedding?: { url?: string; model?: string };
+  embedding?: { url?: string; model?: string; provider?: "llama.cpp" | "ollama" };
   /**
    * Project folders and git remotes that belong to one project: slug → cwd prefixes
    * (`/home/me/dev/app`) or remotes (`github.com/me/app`). A folder with no entry is the project
@@ -52,7 +52,7 @@ export function loadConfig(path = defaultConfigPath()): Config {
     throw new Error(`${path}: claudeCode.exclude must be a list of strings`);
   }
   const embedding = (raw as { embedding?: unknown })?.embedding ?? {};
-  const { url, model } = embedding as { url?: unknown; model?: unknown };
+  const { url, model, provider } = embedding as { url?: unknown; model?: unknown; provider?: unknown };
   if (typeof embedding !== "object" || [url, model].some((v) => v !== undefined && typeof v !== "string")) {
     throw new Error(`${path}: embedding.url and embedding.model must be strings`);
   }
@@ -66,9 +66,10 @@ export function loadConfig(path = defaultConfigPath()): Config {
     const ok = typeof projects === "object" && projects !== null && !Array.isArray(projects) && Object.values(projects).every((v) => Array.isArray(v) && v.every((x) => typeof x === "string"));
     if (!ok) throw new Error(`${path}: projects must map a project name to a list of folders or remotes`);
   }
+  if (provider !== undefined && provider !== "llama.cpp" && provider !== "ollama") throw new Error(`${path}: embedding.provider must be llama.cpp or ollama`);
   return {
     claudeCode: { exclude },
-    embedding: { url: url as string | undefined, model: model as string | undefined },
+    embedding: { url: url as string | undefined, model: model as string | undefined, provider: provider as "llama.cpp" | "ollama" | undefined },
     ...(paths ? { daemon: { paths: paths as string[] } } : {}),
     ...(projects ? { projects: projects as Record<string, string[]> } : {}),
   };

@@ -9,7 +9,9 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { getLlama, resolveModelFile } from "node-llama-cpp";
 import { OllamaEmbedder } from "../src/embed.js";
-import { chunkInputs, type TurnRow } from "../src/vectors.js";
+import { chunkInputs } from "../src/vectors.js";
+
+type TurnRow = Parameters<typeof chunkInputs>[0][number];
 
 const TOKENS_PER_SECOND_MIN = 200;
 const COSINE_MIN = 0.999;

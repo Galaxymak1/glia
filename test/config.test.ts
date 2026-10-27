@@ -21,3 +21,13 @@ describe("loadConfig daemon", () => {
     expect(() => load({ daemon: { paths: "/a" } })).toThrow(/daemon\.paths must be a list of strings/);
   });
 });
+
+describe("loadConfig embedding.provider", () => {
+  it("keeps llama.cpp and ollama", () => {
+    expect(load({ embedding: { provider: "llama.cpp" } }).embedding?.provider).toBe("llama.cpp");
+    expect(load({ embedding: { provider: "ollama" } }).embedding?.provider).toBe("ollama");
+  });
+  it("rejects anything else", () => {
+    expect(() => load({ embedding: { provider: "openai" } })).toThrow(/embedding\.provider must be llama\.cpp or ollama/);
+  });
+});

@@ -7,6 +7,8 @@ export interface Embedder {
   readonly model: string;
   /** One vector of EMBEDDING_DIMS numbers per text, in order. */
   embed(texts: string[]): Promise<Float32Array[]>;
+  /** Tokens embedded so far, when the embedder counts them. */
+  readonly tokens?: number;
 }
 
 /**

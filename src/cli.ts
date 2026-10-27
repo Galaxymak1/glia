@@ -6,7 +6,6 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
 import { anthropicApiKey, type Config, defaultConfigPath, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
-import { OllamaEmbedder } from "./embed.js";
 import { search } from "./search.js";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createMcpServer } from "./mcp.js";
@@ -31,6 +30,7 @@ import { createInterface, emitKeypressEvents } from "node:readline";
 import { Vault, vaultDirFor } from "./vault.js";
 import { moveLegacyPaths } from "./legacy.js";
 import { sessionStartHook } from "./hooks.js";
+import { createEmbedder, LazyEmbedder } from "./embedLlama.js";
 import { checks, runInit } from "./init.js";
 import { initTerminalIo, realInitEnv } from "./initEnv.js";
 import { acquireLock, daemonLogger, localJobs, runOnce } from "./daemon.js";
@@ -304,8 +304,7 @@ async function index(dbPath: string, config: Config, rebuild: boolean): Promise<
   const db = openDb(dbPath);
   try {
     migrate(db);
-    const { url, model } = embeddingSettings(config);
-    const embedder = new OllamaEmbedder(model, url);
+    const embedder = await createEmbedder(config, dirname(dbPath));
     const started = Date.now();
     let last = 0;
     const report = await buildIndex(db, embedder, {
@@ -315,13 +314,13 @@ async function index(dbPath: string, config: Config, rebuild: boolean): Promise<
         last = Date.now();
         const secs = (Date.now() - started) / 1000;
         const eta = done ? Math.round(((total - done) * secs) / done / 60) : 0;
-        console.error(`glia: embedded ${done}/${total} chunks (${Math.round(embedder.tokens / secs)} tokens/s, about ${eta} min left)`);
+        console.error(`glia: embedded ${done}/${total} chunks (${Math.round((embedder.tokens ?? 0) / secs)} tokens/s, about ${eta} min left)`);
       },
     });
     const secs = (Date.now() - started) / 1000;
     console.log(
-      `Embedded ${report.chunksEmbedded} chunks of ${report.turnsEmbedded} turns with ${model} ` +
-        `(${embedder.tokens} tokens, ${secs.toFixed(0)} s); ${report.turnsUnchanged} turns up to date; ` +
+      `Embedded ${report.chunksEmbedded} chunks of ${report.turnsEmbedded} turns with ${embedder.model} ` +
+        `(${embedder.tokens ?? 0} tokens, ${secs.toFixed(0)} s); ${report.turnsUnchanged} turns up to date; ` +
         `${report.turnsCleared} cleared; ${report.turns} turns in all`,
     );
     return 0;
@@ -334,8 +333,7 @@ async function indexClaims(dbPath: string, config: Config): Promise<number> {
   const db = openDb(dbPath);
   try {
     migrate(db);
-    const { url, model } = embeddingSettings(config);
-    const r = await syncClaims(db, new Vault(vaultDirFor(dbPath)), new OllamaEmbedder(model, url));
+    const r = await syncClaims(db, new Vault(vaultDirFor(dbPath)), await createEmbedder(config, dirname(dbPath)));
     console.log(`Claims: ${r.inserted} new, ${r.updated} updated, ${r.removed} removed, ${r.embedded} embedded`);
     for (const e of r.errors) console.error(`glia: ${scrubText(e).value}`);
     if (r.embedError) console.error(`glia: meaning index of claims not updated (${r.embedError}); keyword search still finds them`);
@@ -364,9 +362,8 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
         );
         const v = validateCandidates(db);
         if (v.checked) console.log(formatValidation(v));
-        const { url, model } = embeddingSettings(loadConfig());
         const vault = new Vault(vaultDirFor(dbPath));
-        const d = await dedupCandidates(db, vault, new OllamaEmbedder(model, url));
+        const d = await dedupCandidates(db, vault, await createEmbedder(config, dirname(dbPath)));
         for (const e of d.syncErrors) console.error(`glia: ${scrubText(e).value}`);
         if (d.held) console.error(`glia: meaning index unavailable; ${d.held} candidates held until it is back (run: glia extract poll)`);
         if (d.previouslyRejected) console.log(`${d.previouslyRejected} candidates dropped: a rewording of a statement you rejected`);
@@ -506,8 +503,8 @@ async function searchCommand(dbPath: string, config: Config, query: string, limi
   const db = openDb(dbPath);
   try {
     migrate(db);
-    const { url, model } = embeddingSettings(config);
-    const result = await search(db, new OllamaEmbedder(model, url, 120_000), query, { limit, includeInjected });
+    const { model } = embeddingSettings(config);
+    const result = await search(db, await createEmbedder(config, dirname(dbPath)), query, { limit, includeInjected });
     if (result.meaningError) console.error(`glia: meaning search unavailable (${result.meaningError}); keyword results only`);
     const status = indexStatus(db, model);
     if (status.missing) console.error(`glia: ${status.missing} turns are not in the meaning index yet; run: glia index`);
@@ -533,8 +530,9 @@ async function searchCommand(dbPath: string, config: Config, query: string, limi
 function mcp(dbPath: string, config: Config): number {
   const db = openDb(dbPath);
   migrate(db);
-  const { url, model } = embeddingSettings(config);
-  const embedder = new OllamaEmbedder(model, url, 120_000);
+  const { model } = embeddingSettings(config);
+  // Built when the first query needs it: loading the model costs seconds and memory a session may never use.
+  const embedder = new LazyEmbedder(model, () => createEmbedder(config, dirname(dbPath)));
   const handle = serveStdio(() => createMcpServer(db, embedder, new Vault(vaultDirFor(dbPath))), {
     onerror: (err) => console.error(`glia mcp: ${err.message}`),
   });

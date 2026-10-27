@@ -4,6 +4,7 @@
 import { dirname, join } from "node:path";
 import { type Client, detectClients, registrationPlan } from "./clients.js";
 import { type Config, embeddingSettings } from "./config.js";
+import { DEFAULT_EMBED_MODEL } from "./embed.js";
 import type Database from "better-sqlite3";
 import { migrate, migrations, schemaVersion } from "./migrations.js";
 import { installService, type Platform, serviceActive, type ServiceDeps } from "./service.js";
@@ -48,6 +49,8 @@ export interface InitEnv {
   /** The first ingest of the given folders. */
   ingest(paths: string[]): Promise<void>;
   hasApiKey(): boolean;
+  /** BGE-M3 inside glia's own process, when node-llama-cpp can be loaded. */
+  inProcess: { available(): Promise<boolean>; modelPath: string; download(onProgress: (done: number, total: number) => void): Promise<void> };
   service: ServiceDeps;
 }
 
@@ -138,9 +141,14 @@ export async function checks(env: InitEnv): Promise<Check[]> {
 
   const config = env.loadConfig();
   const { url, model } = embeddingSettings(config);
-  const ollama = await ollamaState(env, url, model);
+  const inProcess = config.embedding?.provider !== "ollama" && model === DEFAULT_EMBED_MODEL && (await env.inProcess.available());
+  const ollama = inProcess ? "down" : await ollamaState(env, url, model);
   out.push(
-    ollama === "ready"
+    inProcess
+      ? env.fs.exists(env.inProcess.modelPath)
+        ? { id: "embeddings", ok: true, detail: "meaning search in-process (no Ollama needed)" }
+        : { id: "embeddings", ok: false, detail: "the embedding model (634 MB) is not downloaded yet", fix: "Run: glia init" }
+      : ollama === "ready"
       ? { id: "embeddings", ok: true, detail: `meaning search through Ollama (${model})` }
       : ollama === "no-model"
         ? { id: "embeddings", ok: false, detail: `Ollama is running without ${model}`, fix: `Run: ollama pull ${model}` }
@@ -173,7 +181,7 @@ export async function checks(env: InitEnv): Promise<Check[]> {
       ? { id: "first-run", ok: true, detail: sources > 0 ? `${sources} sources, ${turns} turns` : "no Claude Code history yet" }
       : { id: "first-run", ok: false, detail: "nothing ingested yet", fix: "Run: glia init" },
   );
-  out.push({ id: "index", ok: true, detail: ollama !== "ready" ? "meaning index off (no Ollama)" : pendingIndex ? `meaning index: ${pendingIndex} turns still to embed (the daemon is building it)` : "meaning index: complete" });
+  out.push({ id: "index", ok: true, detail: !inProcess && ollama !== "ready" ? "meaning index off (no Ollama)" : pendingIndex ? `meaning index: ${pendingIndex} turns still to embed (the daemon is building it)` : "meaning index: complete" });
   return out;
 }
 
@@ -222,9 +230,11 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
     return before;
   }
   const pending = await pendingClients(env);
+  const config0 = env.loadConfig();
   const todo: string[] = [];
   if (failing.has("database")) todo.push("create or migrate the database");
-  if (failing.has("embeddings")) todo.push(`pull the embedding model through Ollama`);
+  const inProcess = config0.embedding?.provider !== "ollama" && embeddingSettings(config0).model === DEFAULT_EMBED_MODEL && (await env.inProcess.available());
+  if (failing.has("embeddings")) todo.push(inProcess ? "download the embedding model (634 MB)" : "pull the embedding model through Ollama");
   if (failing.has("config")) todo.push(`write ${env.configPath}`);
   for (const p of pending) todo.push(p.plan.kind === "edit" ? `edit ${p.plan.path} to add glia` : p.plan.kind === "commands" ? `run: ${p.plan.argv.map((a) => a.join(" ")).join("; ")}` : `show how to add glia to ${p.client}`);
   if (failing.has("first-run")) todo.push(`ingest ${env.projectsDir}`);
@@ -259,7 +269,17 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
       db.close();
     }
   }
-  if (failing.has("embeddings")) await pullModel(env, url, model, io.say);
+  if (failing.has("embeddings")) {
+    if (inProcess) {
+      let last = 0;
+      await env.inProcess.download((done, total) => {
+        if (Date.now() - last > 2000) {
+          last = Date.now();
+          io.say(`  downloading the embedding model: ${mb(done)} / ${mb(total)} MB`);
+        }
+      });
+    } else await pullModel(env, url, model, io.say);
+  }
   if (failing.has("config")) {
     const existing = env.fs.read(env.configPath);
     const merged = existing ? (JSON.parse(existing) as Record<string, unknown>) : {};

@@ -93,6 +93,7 @@ function makeEnv(over: Partial<InitEnv> = {}): InitEnv {
       db.close();
     },
     hasApiKey: () => false,
+    inProcess: { available: async () => false, modelPath: join(dataDir, "models/bge-m3-Q8_0.gguf"), download: async () => {} },
     service: {
       platform: "linux",
       cli: ["/usr/bin/glia"],
@@ -243,5 +244,44 @@ describe("checks (glia doctor)", () => {
   it("a missing model is a failure with the pull command", async () => {
     ollama = "no-model";
     expect((await checks(makeEnv())).find((c) => c.id === "embeddings")).toMatchObject({ ok: false, fix: `Run: ollama pull ${MODEL}` });
+  });
+});
+
+describe("in-process embeddings", () => {
+  function inProcessEnv() {
+    const env = makeEnv();
+    const downloads: string[] = [];
+    env.inProcess = {
+      available: async () => true,
+      modelPath: join(home, ".local/share/glia/models/bge-m3-Q8_0.gguf"),
+      download: async () => {
+        downloads.push("model");
+        env.fs.write(join(home, ".local/share/glia/models/bge-m3-Q8_0.gguf"), "gguf");
+      },
+    };
+    return { env, downloads };
+  }
+
+  it("downloads the model once and never asks Ollama", async () => {
+    ollama = "down";
+    const { env, downloads } = inProcessEnv();
+    const r = await runInit(env, yesIo(), yesOpts);
+    expect(r.find((c) => c.id === "embeddings")).toMatchObject({ ok: true, detail: expect.stringMatching(/in-process/) });
+    expect(downloads).toEqual(["model"]);
+    expect(pulled).toEqual([]);
+    await runInit(env, yesIo(), yesOpts);
+    expect(downloads).toEqual(["model"]);
+  });
+
+  it("a missing model file is a failed check that init fixes", async () => {
+    const { env } = inProcessEnv();
+    const before = await checks(env);
+    expect(before.find((c) => c.id === "embeddings")).toMatchObject({ ok: false, fix: "Run: glia init" });
+  });
+
+  it("provider ollama keeps the Ollama path", async () => {
+    const { env } = inProcessEnv();
+    env.loadConfig = () => ({ claudeCode: { exclude: [] }, embedding: { provider: "ollama" } });
+    expect((await checks(env)).find((c) => c.id === "embeddings")).toMatchObject({ ok: true, detail: expect.stringMatching(/Ollama/) });
   });
 });

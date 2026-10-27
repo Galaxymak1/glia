@@ -8,6 +8,7 @@ import { createInterface } from "node:readline";
 import { anthropicApiKey, loadConfig } from "./config.js";
 import { spawnJob } from "./daemon.js";
 import { openDb } from "./db.js";
+import { downloadModel, loadLlamaModule, modelPathFor } from "./embedLlama.js";
 import type { InitEnv, InitIo } from "./init.js";
 import type { Platform } from "./service.js";
 
@@ -81,6 +82,13 @@ export function realInitEnv(dbPath: string, configPath: string): InitEnv {
       const r = await spawnJob([...cli, "ingest", ...paths, "--db", dbPath], 30 * 60_000);
       if (r.code !== 0) throw new Error(`glia ingest failed: ${r.stderr.trim().split("\n").slice(-3).join(" | ")}`);
       process.stdout.write(r.stdout);
+    },
+    inProcess: {
+      available: () => loadLlamaModule().then(() => true, () => false),
+      modelPath: modelPathFor(dirname(dbPath)),
+      download: async (onProgress) => {
+        await downloadModel(dirname(dbPath), onProgress);
+      },
     },
     hasApiKey: () => {
       try {
