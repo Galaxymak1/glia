@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
 import { anthropicApiKey, type Config, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
@@ -30,6 +32,7 @@ import { Vault, vaultDirFor } from "./vault.js";
 import { moveLegacyPaths } from "./legacy.js";
 import { acquireLock, daemonLogger, localJobs, runOnce } from "./daemon.js";
 import { startScheduler } from "./scheduler.js";
+import { installService, type Platform, serviceActive, type ServiceDeps, uninstallService } from "./service.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
 const USAGE = `Usage: glia <command> [options]
@@ -61,6 +64,8 @@ Commands:
   search <query...>             Hybrid keyword + meaning search over turns
   daemon [--once]               Run the local jobs (sweep, index, extraction) on their own clock;
                                 --once runs every due job once and exits
+  daemon install | uninstall | status
+                                Start the daemon at login (systemd, launchd or a Windows task)
   mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
   eval run [--arms B,C]         Answer every evaluation question with claude -p: arm B with the evidence
                                 tools (raw search), arm C with the claim tools (recall and brief); judge
@@ -591,6 +596,46 @@ async function evalCommand(
   }
 }
 
+/** `glia daemon install | uninstall | status`: the login service, on this machine's service manager. */
+async function daemonService(action: "install" | "uninstall" | "status"): Promise<number> {
+  const platform = process.platform as Platform;
+  if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {
+    console.error(`glia: no service manager known for ${process.platform}; run: glia daemon`);
+    return 1;
+  }
+  const deps: ServiceDeps = {
+    platform,
+    cli: [process.execPath, ...process.execArgv, resolve(process.argv[1]!)],
+    home: homedir(),
+    uid: process.getuid?.() ?? 0,
+    read: (p) => (existsSync(p) ? readFileSync(p, "utf8") : null),
+    write: (p, c) => {
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, c);
+    },
+    remove: (p) => rmSync(p, { force: true }),
+    run: (argv) =>
+      new Promise((done) => {
+        const child = spawn(argv[0]!, argv.slice(1), { stdio: "ignore" });
+        child.on("error", () => done(127));
+        child.on("close", (code) => done(code ?? 1));
+      }),
+  };
+  if (action === "status") {
+    const active = await serviceActive(deps);
+    console.log(active ? "glia daemon: running" : "glia daemon: not running (start it at login with: glia daemon install)");
+    return active ? 0 : 1;
+  }
+  if (action === "uninstall") {
+    await uninstallService(deps);
+    console.log("glia daemon: removed");
+    return 0;
+  }
+  const { changed } = await installService(deps);
+  console.log(changed ? "glia daemon: installed and started" : "glia daemon: already installed and running");
+  return (await serviceActive(deps)) ? 0 : 1;
+}
+
 /** `glia daemon`: the local jobs on their own clock, one daemon per machine. */
 async function daemon(dbPath: string, config: Config, once: boolean): Promise<number> {
   const dataDir = dirname(resolve(dbPath));
@@ -705,6 +750,11 @@ async function main(argv: string[]): Promise<number> {
       return searchCommand(values.db ?? defaultDbPath(), loadConfig(), args.join(" "), limit, values.injected ?? false, values.json ?? false);
     }
     case "daemon":
+      if (args[0] === "install" || args[0] === "uninstall" || args[0] === "status") return daemonService(args[0]);
+      if (args.length) {
+        console.error(`glia daemon takes install | uninstall | status, or nothing.\n\n${USAGE}`);
+        return 1;
+      }
       return daemon(values.db ?? defaultDbPath(), loadConfig(), values.once ?? false);
     case "mcp":
       return mcp(values.db ?? defaultDbPath(), loadConfig());
