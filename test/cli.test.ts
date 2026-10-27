@@ -24,8 +24,8 @@ const brain = (...args: string[]) =>
 describe("glia init", () => {
   it("creates the database, then reports it up to date", () => {
     const db = join(dir, "nested", "brain.db");
-    expect(brain("init", "--db", db)).toBe(`Created ${db} (schema v${V})\n`);
-    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v${V})\n`);
+    expect(brain("init", "--db-only", "--db", db)).toBe(`Created ${db} (schema v${V})\n`);
+    expect(brain("init", "--db-only", "--db", db)).toBe(`${db} is up to date (schema v${V})\n`);
   });
 
   it("rejects an unknown command", () => {
@@ -36,11 +36,11 @@ describe("glia init", () => {
     const db = join(dir, "race", "brain.db");
     const run = promisify(execFile);
     const outs = await Promise.all(
-      Array.from({ length: 4 }, () => run(process.execPath, ["--import", "tsx", "src/cli.ts", "init", "--db", db], { encoding: "utf8", env })),
+      Array.from({ length: 4 }, () => run(process.execPath, ["--import", "tsx", "src/cli.ts", "init", "--db-only", "--db", db], { encoding: "utf8", env })),
     );
     const created = outs.filter((o) => o.stdout.startsWith("Created")).length;
     expect(created).toBe(1);
-    expect(brain("init", "--db", db)).toBe(`${db} is up to date (schema v${V})\n`);
+    expect(brain("init", "--db-only", "--db", db)).toBe(`${db} is up to date (schema v${V})\n`);
   });
 });
 

@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
-import { anthropicApiKey, type Config, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
+import { anthropicApiKey, type Config, defaultConfigPath, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
 import { OllamaEmbedder } from "./embed.js";
 import { search } from "./search.js";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
@@ -31,6 +31,8 @@ import { createInterface, emitKeypressEvents } from "node:readline";
 import { Vault, vaultDirFor } from "./vault.js";
 import { moveLegacyPaths } from "./legacy.js";
 import { sessionStartHook } from "./hooks.js";
+import { checks, runInit } from "./init.js";
+import { initTerminalIo, realInitEnv } from "./initEnv.js";
 import { acquireLock, daemonLogger, localJobs, runOnce } from "./daemon.js";
 import { startScheduler } from "./scheduler.js";
 import { installService, type Platform, serviceActive, type ServiceDeps, uninstallService } from "./service.js";
@@ -39,7 +41,10 @@ import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } fro
 const USAGE = `Usage: glia <command> [options]
 
 Commands:
-  init                          Create the database, or apply pending migrations
+  init [--yes] [--dry-run] [--exclude <pattern>]... [--no-service]
+                                Set glia up: database, embeddings, config, MCP clients, daemon, first ingest;
+                                safe to run again. --db-only just creates or migrates the database
+  doctor                        Check the setup and print the fix for whatever is broken
   scrub --dry-run [path...]     Report the secrets scrubbing would remove (default: ~/.claude/projects)
   ingest <path...>              Scrub and store raw files, then parse Claude Code transcripts and
                                 memory, and claude.ai export ZIPs, into sources and turns (idempotent).
@@ -666,6 +671,23 @@ async function sessionStartCommand(dbPath: string, config: Config): Promise<numb
   return 0;
 }
 
+/** `glia init`: the setup wizard (src/init.ts) on this machine. */
+async function initWizard(dbPath: string, values: { yes?: boolean; "dry-run"?: boolean; exclude?: string[]; "no-service"?: boolean }): Promise<number> {
+  if (!values.yes && !values["dry-run"] && !process.stdin.isTTY) {
+    console.error("glia init asks questions and needs a terminal; run it in one, or pass --yes (and --exclude <pattern> for the projects to leave out)");
+    return 1;
+  }
+  const io = initTerminalIo();
+  const results = await runInit(realInitEnv(dbPath, defaultConfigPath()), io, {
+    yes: values.yes ?? false,
+    dryRun: values["dry-run"] ?? false,
+    exclude: values.exclude ?? [],
+    noService: values["no-service"] ?? false,
+  });
+  process.stdin.pause();
+  return values["dry-run"] || results.every((c) => c.ok || (values["no-service"] && c.id === "service")) ? 0 : 1;
+}
+
 /** `glia daemon`: the local jobs on their own clock, one daemon per machine. */
 async function daemon(dbPath: string, config: Config, once: boolean): Promise<number> {
   const dataDir = dirname(resolve(dbPath));
@@ -718,6 +740,10 @@ async function main(argv: string[]): Promise<number> {
       from: { type: "string" },
       wait: { type: "boolean" },
       once: { type: "boolean" },
+      yes: { type: "boolean" },
+      "db-only": { type: "boolean" },
+      exclude: { type: "string", multiple: true },
+      "no-service": { type: "boolean" },
       stats: { type: "boolean" },
       audit: { type: "boolean" },
       limit: { type: "string" },
@@ -747,8 +773,19 @@ async function main(argv: string[]): Promise<number> {
   }
   switch (command) {
     case "init":
-      init(values.db ?? defaultDbPath());
-      return 0;
+      if (values["db-only"]) {
+        init(values.db ?? defaultDbPath());
+        return 0;
+      }
+      return initWizard(values.db ?? defaultDbPath(), values);
+    case "doctor": {
+      const checksOut = await checks(realInitEnv(values.db ?? defaultDbPath(), defaultConfigPath()));
+      for (const c of checksOut) {
+        console.log(`${c.ok ? "ok " : "FAIL"}  ${c.id}: ${c.detail}`);
+        if (c.fix) console.log(`      ${c.fix}`);
+      }
+      return checksOut.every((c) => c.ok) ? 0 : 1;
+    }
     case "scrub":
       if (!values["dry-run"]) {
         console.error("glia scrub needs --dry-run: scrubbed copies are written by ingest once the evidence store (#2) lands.");
