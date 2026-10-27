@@ -15,6 +15,8 @@ export interface Config {
   };
   /** The Ollama server and model of the meaning index; defaults in `embeddingSettings`. */
   embedding?: { url?: string; model?: string };
+  /** `glia daemon`: the folders its sweep ingests (default: ~/.claude/projects). */
+  daemon?: { paths?: string[] };
 }
 
 const DEFAULTS: Config = { claudeCode: { exclude: [] } };
@@ -48,7 +50,16 @@ export function loadConfig(path = defaultConfigPath()): Config {
   if (typeof embedding !== "object" || [url, model].some((v) => v !== undefined && typeof v !== "string")) {
     throw new Error(`${path}: embedding.url and embedding.model must be strings`);
   }
-  return { claudeCode: { exclude }, embedding: { url: url as string | undefined, model: model as string | undefined } };
+  const daemon = (raw as { daemon?: { paths?: unknown } })?.daemon;
+  const paths = daemon?.paths;
+  if (paths !== undefined && (!Array.isArray(paths) || !paths.every((p) => typeof p === "string"))) {
+    throw new Error(`${path}: daemon.paths must be a list of strings`);
+  }
+  return {
+    claudeCode: { exclude },
+    embedding: { url: url as string | undefined, model: model as string | undefined },
+    ...(paths ? { daemon: { paths: paths as string[] } } : {}),
+  };
 }
 
 /** Whether a Claude Code project folder name matches one of the exclusion patterns. */

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
 import { anthropicApiKey, type Config, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
@@ -28,6 +28,8 @@ import { auditReport, formatAudit, sampleAudit } from "./audit.js";
 import { createInterface, emitKeypressEvents } from "node:readline";
 import { Vault, vaultDirFor } from "./vault.js";
 import { moveLegacyPaths } from "./legacy.js";
+import { acquireLock, daemonLogger, localJobs, runOnce } from "./daemon.js";
+import { startScheduler } from "./scheduler.js";
 import { defaultTranscriptsDir, formatReport, isScannable, scanPaths, walk } from "./scan.js";
 
 const USAGE = `Usage: glia <command> [options]
@@ -57,6 +59,8 @@ Commands:
                                 write-precision audit; triage them with glia review --audit
   audit report                  Write precision of the audit, AI-origin claims auto-accepted, the gate
   search <query...>             Hybrid keyword + meaning search over turns
+  daemon [--once]               Run the local jobs (sweep, index, extraction) on their own clock;
+                                --once runs every due job once and exits
   mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
   eval run [--arms B,C]         Answer every evaluation question with claude -p: arm B with the evidence
                                 tools (raw search), arm C with the claim tools (recall and brief); judge
@@ -587,6 +591,45 @@ async function evalCommand(
   }
 }
 
+/** `glia daemon`: the local jobs on their own clock, one daemon per machine. */
+async function daemon(dbPath: string, config: Config, once: boolean): Promise<number> {
+  const dataDir = dirname(resolve(dbPath));
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const lock = acquireLock(join(dataDir, "daemon.pid"));
+  const db = openDb(dbPath);
+  migrate(db);
+  const log = daemonLogger(join(dataDir, "daemon.log"));
+  const hasApiKey = () => {
+    try {
+      anthropicApiKey();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const jobs = localJobs({ cli: [process.execPath, ...process.execArgv, process.argv[1]!], db, dbPath: resolve(dbPath), config, hasApiKey });
+  try {
+    if (once) {
+      for (const r of await runOnce(jobs)) {
+        console.log(r.error ? `${r.type}: failed: ${r.error}` : `${r.type}: ok`);
+        log({ level: r.error ? "error" : "info", job: r.type, state: r.error ? "failed" : "done", ...(r.error ? { error: r.error } : {}) });
+      }
+      return 0;
+    }
+    const scheduler = startScheduler(db, jobs, { log });
+    log({ level: "info", job: "daemon", state: "started", pid: process.pid });
+    await new Promise<void>((resolveStop) => {
+      for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, () => resolveStop());
+    });
+    await scheduler.stop();
+    log({ level: "info", job: "daemon", state: "stopped" });
+    return 0;
+  } finally {
+    db.close();
+    lock.release();
+  }
+}
+
 async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -599,6 +642,7 @@ async function main(argv: string[]): Promise<number> {
       claims: { type: "boolean" },
       from: { type: "string" },
       wait: { type: "boolean" },
+      once: { type: "boolean" },
       stats: { type: "boolean" },
       audit: { type: "boolean" },
       limit: { type: "string" },
@@ -660,6 +704,8 @@ async function main(argv: string[]): Promise<number> {
       }
       return searchCommand(values.db ?? defaultDbPath(), loadConfig(), args.join(" "), limit, values.injected ?? false, values.json ?? false);
     }
+    case "daemon":
+      return daemon(values.db ?? defaultDbPath(), loadConfig(), values.once ?? false);
     case "mcp":
       return mcp(values.db ?? defaultDbPath(), loadConfig());
     case "eval":
