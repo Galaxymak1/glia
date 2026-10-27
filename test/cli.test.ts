@@ -21,6 +21,12 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const brain = (...args: string[]) =>
   execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", env });
 
+describe("glia --version", () => {
+  it("prints the package version", () => {
+    expect(brain("--version")).toBe(`${JSON.parse(readFileSync("package.json", "utf8")).version}\n`);
+  });
+});
+
 describe("glia init", () => {
   it("creates the database, then reports it up to date", () => {
     const db = join(dir, "nested", "brain.db");

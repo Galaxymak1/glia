@@ -98,7 +98,8 @@ Options:
 Config: $GLIA_CONFIG, else ~/.config/glia/config.json
   {"claudeCode": {"exclude": ["-home-me-work-*"]}}   project folders never stored or parsed
   {"embedding": {"url": "http://localhost:11434", "model": "hf.co/gpustack/bge-m3-GGUF:Q8_0"}}
-  -h, --help    Show this help`;
+  -h, --help    Show this help
+  -v, --version Print the version`;
 
 function init(dbPath: string): void {
   const db = openDb(dbPath);
@@ -756,11 +757,16 @@ async function main(argv: string[]): Promise<number> {
       arms: { type: "string" },
       n: { type: "string" },
       help: { type: "boolean", short: "h" },
+      version: { type: "boolean", short: "v" },
     },
   });
   // An explicit --db is the user's own path: the folders from before the rename are left alone then.
   if (values.db === undefined) moveLegacyPaths();
   const [command, ...args] = positionals;
+  if (values.version) {
+    console.log((JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version);
+    return 0;
+  }
   if (values.help) {
     console.log(USAGE);
     return 0;
