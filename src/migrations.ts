@@ -441,6 +441,16 @@ export const migrations: Migration[] = [
       ALTER TABLE eval_results_v11 RENAME TO eval_results;
     `,
   },
+  {
+    version: 12,
+    name: "scheduled runs",
+    sql: `
+      -- glia daemon (Packaging): the run a scheduled job belongs to (a Paris quarter hour or date),
+      -- so a key that already ran is never run twice.
+      ALTER TABLE jobs ADD COLUMN run_key TEXT;
+      CREATE INDEX jobs_type_run_key ON jobs (type, run_key);
+    `,
+  },
 ];
 
 export function schemaVersion(db: Database): number {
