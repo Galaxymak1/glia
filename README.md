@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/Galaxymak1/glia/master/assets/logo-wordmark.svg" alt="glia" width="320"></p>
+
 # glia
 
 **Claude that remembers.**
