@@ -4,7 +4,9 @@
   "description": "Memory for Claude: remembers your conversations and brings back what matters",
   "version": "0.1.1",
   "author": { "name": "Kylian" },
+  "homepage": "https://github.com/Galaxymak1/glia#readme",
   "repository": "https://github.com/Galaxymak1/glia",
+  "icon": "./.claude-plugin/icon.png",
   "license": "Elastic-2.0",
   "keywords": ["memory", "mcp", "second-brain"]
 }
