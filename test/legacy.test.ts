@@ -14,9 +14,9 @@ afterEach(() => rmSync(home, { recursive: true, force: true }));
 
 describe("glia paths", () => {
   it("the database and config live under glia", () => {
-    expect(defaultDbPath({ XDG_DATA_HOME: "/d" })).toBe("/d/glia/glia.db");
+    expect(defaultDbPath({ XDG_DATA_HOME: "/d" })).toBe(join("/d", "glia", "glia.db"));
     expect(defaultDbPath({ GLIA_DB: "/x.db" })).toBe("/x.db");
-    expect(defaultConfigPath({ XDG_CONFIG_HOME: "/c" })).toBe("/c/glia/config.json");
+    expect(defaultConfigPath({ XDG_CONFIG_HOME: "/c" })).toBe(join("/c", "glia", "config.json"));
     expect(defaultConfigPath({ GLIA_CONFIG: "/y.json" })).toBe("/y.json");
   });
 });

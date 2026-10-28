@@ -179,6 +179,6 @@ describe("anthropicApiKey", () => {
     mkdirSync(join(home, "glia"));
     writeFileSync(join(home, "glia", "env"), "ANTHROPIC_API_KEY=sk-test-123\n");
     expect(anthropicApiKey({ XDG_CONFIG_HOME: home, ANTHROPIC_API_KEY: "from-shell" })).toBe("sk-test-123");
-    expect(() => anthropicApiKey({ XDG_CONFIG_HOME: tmpDir() })).toThrow(/glia\/env/);
+    expect(() => anthropicApiKey({ XDG_CONFIG_HOME: tmpDir() })).toThrow(/glia[\\/]env/);
   });
 });

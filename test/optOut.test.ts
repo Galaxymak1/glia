@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterAll, describe, expect, it } from "vitest";
-import { hasOptOutMarker, sessionOf } from "../src/optOut.js";
+import { openDb } from "../src/db.js";
+import { EvidenceStore } from "../src/evidence.js";
+import { migrate } from "../src/migrations.js";
+import { hasOptOutMarker, optOut, sessionOf } from "../src/optOut.js";
 
 const line = (o: object) => JSON.stringify(o);
 const user = (content: unknown, extra: object = {}) => line({ type: "user", uuid: "u", parentUuid: null, message: { role: "user", content }, ...extra });
@@ -109,5 +112,20 @@ describe("brain ingest with #nobrain", () => {
     cpSync(join(project, `${S}.jsonl`), join(backup, `${S}.jsonl`));
     cpSync(join(project, S, "subagents", "agent-a1.jsonl"), join(backup, S, "subagents", "agent-a1.jsonl"));
     expect(ingest(db, join(backup, S))).toMatch(/^Stored 0 new files[^]*1 sessions opted out \(#nobrain\): 1 files not stored\n/);
+  });
+});
+
+describe("optOut", () => {
+  it("finds the copies read from Windows paths", () => {
+    const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
+    const dir = mkdtempSync(join(tmpdir(), "brain-optout-win-"));
+    const db = openDb(join(dir, "brain.db"));
+    migrate(db);
+    const store = new EvidenceStore(db, join(dir, "raw"));
+    store.put(`C:\\Users\\me\\.claude\\projects\\p\\${S}.jsonl`, Buffer.from(user("hi") + "\n"));
+    store.put(`C:\\Users\\me\\.claude\\projects\\p\\${S}\\subagents\\agent-a1.jsonl`, Buffer.from(user("task") + "\n"));
+    expect(optOut(db, join(dir, "raw"), S)).toEqual({ sources: 0, rawFiles: 2 });
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 });

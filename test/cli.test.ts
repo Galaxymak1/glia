@@ -283,7 +283,7 @@ describe("glia extract", () => {
 
   it("without a key, says where to put one", () => {
     const dbPath = join(dir, "extract", "brain.db");
-    expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "extract", "--db", dbPath], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "no-xdg") }, stdio: "pipe" })).toThrow(/glia\/env: no ANTHROPIC_API_KEY/);
+    expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "extract", "--db", dbPath], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "no-xdg") }, stdio: "pipe" })).toThrow(/glia[\\/]env: no ANTHROPIC_API_KEY/);
   });
 });
 

@@ -1,6 +1,9 @@
 // Starts `glia daemon` at login through the platform's own service manager: a systemd user unit,
 // a launchd agent, or a Windows scheduled task. Nothing here runs with elevated rights.
-import { join } from "node:path";
+// The unit and the plist are only ever read on Linux and macOS: their paths are POSIX paths.
+import { posix } from "node:path";
+
+const { join } = posix;
 
 export type Platform = "linux" | "darwin" | "win32";
 export type ServiceAction = "install" | "uninstall" | "status";

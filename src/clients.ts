@@ -1,7 +1,7 @@
 // Finds the MCP clients on this machine and plans how to register glia in each. A plan is data:
 // the caller shows it, asks, and applies it. Claude Code and Claude Desktop are registered;
 // other clients (Zed, Cursor...) get the snippet in docs/install.md.
-import { join } from "node:path";
+import { posix, win32 } from "node:path";
 import type { Platform } from "./service.js";
 
 export type Client = "claude-code" | "claude-desktop";
@@ -13,6 +13,7 @@ export type RegistrationPlan =
   | { kind: "manual"; snippet: string; why: string };
 
 export function desktopConfigPath(platform: Platform, home: string, env: { APPDATA?: string }): string {
+  const { join } = platform === "win32" ? win32 : posix;
   const dir =
     platform === "darwin" ? join(home, "Library", "Application Support", "Claude") : platform === "win32" ? join(env.APPDATA ?? join(home, "AppData", "Roaming"), "Claude") : join(home, ".config", "Claude");
   return join(dir, "claude_desktop_config.json");

@@ -180,7 +180,8 @@ describe("isExcludedProject", () => {
 });
 
 describe("openDb", () => {
-  it("keeps the database file owner-only", () => {
+  // Windows has no POSIX modes: chmod does nothing there.
+  it.skipIf(process.platform === "win32")("keeps the database file owner-only", () => {
     expect(statSync(join(dir, "brain.db")).mode & 0o777).toBe(0o600);
   });
 });
