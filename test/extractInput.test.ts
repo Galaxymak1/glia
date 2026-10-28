@@ -12,6 +12,7 @@ import {
   selectForExtraction,
 } from "../src/extractInput.js";
 import { migrate } from "../src/migrations.js";
+import { scopeForSource } from "../src/projects.js";
 import { type SourceRow, type TurnRow, writeSource } from "../src/sources.js";
 import { Vault } from "../src/vault.js";
 import { claimFixture, tmpDir } from "./helpers.js";
@@ -46,6 +47,18 @@ beforeEach(() => {
 });
 
 describe("selectForExtraction", () => {
+  it("scopes a source as the SessionStart hook will brief it: by its folder's git remote first", () => {
+    const cwd = "/home/me/dev/ai_second_brain";
+    source("cc", "s1", [turn("u1", "user", "On part sur SQLite.", "2026-10-01T09:00:00Z")], { cwd });
+    const gitRemote = (dir: string) => (dir === cwd ? "git@github.com:me/glia.git" : null);
+    const [picked] = selectForExtraction(db, { gitRemote });
+    expect(picked!.source.scope).toBe("project:glia");
+    const briefed = scopeForSource({ cwd, git_remote: gitRemote(cwd), project_hint: null }, { claudeCode: { exclude: [] } });
+    expect(picked!.source.scope).toBe(briefed);
+    // A folder that is gone, or not a repository: its name.
+    expect(selectForExtraction(db, { gitRemote: () => null })[0]!.source.scope).toBe("project:ai-second-brain");
+  });
+
   it("a second run with no new turns selects nothing", () => {
     source("cc", "s1", [turn("u1", "user", "On part sur SQLite.", "2026-10-01T09:00:00Z")]);
     source("cai", "c1", [turn("h1", "user", "Je préfère le thé.", "2026-10-02T09:00:00Z")]);
