@@ -37,6 +37,9 @@ export function dailyAt(hour: number, minute: number): (d: Date) => string | nul
   };
 }
 
+const RETRY_MS = 15 * 60_000;
+const MAX_RETRY_MS = 4 * 3_600_000;
+
 export interface Job {
   type: string;
   /** The run this instant belongs to, or null when the job is not due. */
@@ -48,13 +51,15 @@ export interface Job {
 /**
  * Checks every job each `tickMs`. A job runs when its key is non-null and no `done` or `running`
  * row holds that key; a job still in flight is never started again. A run that throws, or outlives
- * `timeoutMs`, is recorded `failed`, and its key runs again on a later tick. Runs left `running` by
- * a process that died are failed at start.
+ * `timeoutMs`, is recorded `failed`, and its key runs again `retryMs` later (15 minutes), twice as
+ * long after each further failure, up to 4 hours: a job that keeps failing (a bad API key, an
+ * unreadable file) is not run on every tick. Runs left `running` by a process that died are failed
+ * at start.
  */
 export function startScheduler(
   db: Database.Database,
   jobs: Job[],
-  opts: { tickMs?: number; now?: () => Date; log?: (line: object) => void } = {},
+  opts: { tickMs?: number; now?: () => Date; log?: (line: object) => void; retryMs?: number } = {},
 ): { stop(): Promise<void> } {
   const now = opts.now ?? (() => new Date());
   const log = opts.log ?? (() => {});
@@ -63,6 +68,13 @@ export function startScheduler(
     db.prepare(`UPDATE jobs SET state = 'failed', finished_at = ? WHERE state = 'running' AND run_key IS NOT NULL AND type IN (${types.map(() => "?").join(",")})`).run(isoSeconds(now()), ...types);
   }
   const taken = db.prepare("SELECT 1 FROM jobs WHERE type = ? AND run_key = ? AND state IN ('done', 'running')");
+  const failures = db.prepare("SELECT count(*) AS n, max(finished_at) AS last FROM jobs WHERE type = ? AND run_key = ? AND state = 'failed'");
+  const retryMs = opts.retryMs ?? RETRY_MS;
+  const waiting = (type: string, key: string, at: Date) => {
+    const f = failures.get(type, key) as { n: number; last: string | null };
+    if (!f.n || !f.last) return false;
+    return at.getTime() - Date.parse(f.last) < Math.min(retryMs * 2 ** (f.n - 1), MAX_RETRY_MS);
+  };
   const insert = db.prepare("INSERT INTO jobs (type, state, run_key, started_at) VALUES (?, 'running', ?, ?)");
   const finish = db.prepare("UPDATE jobs SET state = ?, finished_at = ? WHERE id = ?");
   const inFlight = new Map<string, Promise<void>>();
@@ -97,7 +109,7 @@ export function startScheduler(
     for (const job of jobs) {
       if (inFlight.has(job.type)) continue;
       const key = job.key(at);
-      if (key === null || taken.get(job.type, key)) continue;
+      if (key === null || taken.get(job.type, key) || waiting(job.type, key, at)) continue;
       start(job, key);
     }
   };

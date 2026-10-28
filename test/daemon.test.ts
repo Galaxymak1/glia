@@ -111,7 +111,7 @@ describe("spawnJob", () => {
       },
       timeoutMs: 200,
     };
-    const s = startScheduler(db, [job], { tickMs: 20 });
+    const s = startScheduler(db, [job], { tickMs: 20, retryMs: 0 });
     await new Promise((r) => setTimeout(r, 700));
     await s.stop();
     expect(runs).toBeGreaterThanOrEqual(2);
