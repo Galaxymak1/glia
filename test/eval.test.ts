@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
 import {
+  claudeFailure,
   type ClaudeRunner,
   evalReport,
   formatEvalReport,
@@ -36,6 +37,16 @@ const stream = (hits: number[], answer: string) =>
   ]
     .map((m) => JSON.stringify(m))
     .join("\n");
+
+describe("claudeFailure", () => {
+  it("names the exit code and what claude printed, on stderr or, when it printed none there, on stdout", () => {
+    expect(claudeFailure(1, null, "boom\n", "", 600_000)).toBe("claude exited 1: boom");
+    // claude -p writes limit and sign-in errors to stdout, with an empty stderr.
+    expect(claudeFailure(1, null, "", "Claude usage limit reached. Your limit will reset at 5pm.\n", 600_000)).toBe("claude exited 1: Claude usage limit reached. Your limit will reset at 5pm.");
+    expect(claudeFailure(1, null, "", "", 600_000)).toBe("claude exited 1: (no output)");
+    expect(claudeFailure(null, "SIGKILL", "", "", 600_000)).toBe("claude killed (SIGKILL) after 600 s");
+  });
+});
 
 describe("parsing", () => {
   it("reads a valid question set and names every bad line", () => {
