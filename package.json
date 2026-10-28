@@ -1,6 +1,6 @@
 {
   "name": "@galaxymak1/glia",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Memory for Claude: a personal, self-hosted evidence ledger over your Claude conversations",
   "license": "Elastic-2.0",
   "type": "module",
