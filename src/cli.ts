@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -15,7 +15,8 @@ import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
 import { pruneSuperseded, removeStaleTmp } from "./prune.js";
 import { isOptedOut, OPT_OUT_MARKER, OptOutCheck, optOut, sessionOf } from "./optOut.js";
 import { isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
-import { indexClaudeCodeFile } from "./sources.js";
+import { applyExclusions, indexClaudeCodeFile } from "./sources.js";
+import { gitRemoteOf } from "./projects.js";
 import { ingestExportZip, mayBeExportFile } from "./claudeAiExport.js";
 import { scrubText } from "./scrub.js";
 import { migrate, schemaVersion } from "./migrations.js";
@@ -253,6 +254,8 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
       }
     }
     const prune = pruneSuperseded(db, store);
+    // Projects excluded since their sessions were stored: hidden from search, MCP and extraction.
+    const exclusions = applyExclusions(db, config);
     const mb = (n: number) => (n / 1e6).toFixed(1);
     console.log(
       `Stored ${created} new files (${mb(bytes)} MB, ${mb(storedBytes)} MB compressed, ${redactions} secrets redacted); ` +
@@ -278,6 +281,9 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           `(${exportTotals.turnsWritten} turns written, ${exportTotals.turnsRemoved} removed)` +
           (left.length ? `; entries not ingested: ${left.join(", ")}` : ""),
       );
+    }
+    if (exclusions.excluded || exclusions.restored) {
+      console.log(`Exclusions changed: ${exclusions.excluded} sources now in excluded projects are hidden; ${exclusions.restored} shown again`);
     }
     if (optedOut.size) {
       console.log(
@@ -655,14 +661,7 @@ async function sessionStartCommand(dbPath: string, config: Config): Promise<numb
     if (typeof cwd !== "string" || !existsSync(dbPath)) return 0;
     const db = openDb(dbPath);
     try {
-      const gitRemote = (dir: string) => {
-        try {
-          return execFileSync("git", ["-C", dir, "remote", "get-url", "origin"], { encoding: "utf8", timeout: 1000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
-        } catch {
-          return null;
-        }
-      };
-      const out = sessionStartHook({ cwd }, { db, config, gitRemote });
+      const out = sessionStartHook({ cwd }, { db, config, gitRemote: gitRemoteOf });
       if (out) process.stdout.write(`${out}\n`);
     } finally {
       db.close();

@@ -2,11 +2,11 @@
 // Re-running is idempotent; a newer copy of a growing transcript updates its source in place.
 
 import type Database from "better-sqlite3";
-import { type Config, isExcludedPath } from "./config.js";
+import { type Config, isExcludedPath, isExcludedProject } from "./config.js";
 import { detectLang } from "./enrich.js";
 import { scrubText } from "./scrub.js";
 import type { EvidenceStore, RawFile } from "./evidence.js";
-import { CC_PARSER_VERSION, classifyClaudeCodePath, type ParseStats, parseMemory, parseSession } from "./parsers/claudeCode.js";
+import { CC_PARSER_VERSION, classifyClaudeCodePath, type ParseStats, parseMemory, parseSession, UUID } from "./parsers/claudeCode.js";
 
 export type IndexStatus = "new" | "updated" | "unchanged" | "older" | "excluded";
 
@@ -26,6 +26,39 @@ export interface ExistingSource {
   received_at: string | null;
   updated_at: string | null;
   turns: number;
+}
+
+/** The Claude Code project folder an origin path names: the one holding the transcript, its session folder or memory/. */
+const PROJECT_OF = new RegExp(String.raw`(?:^|/)([^/]+)/(?:${UUID}\.jsonl|${UUID}/.+|memory/[^/]+\.md)$`);
+
+/**
+ * Brings `sources.excluded` in line with the config, for sources stored before their project was
+ * excluded: a Claude Code source is out when any path its copy was read from sits in an excluded
+ * project, and back in when the pattern is removed. Search, the meaning index, MCP and extraction
+ * all leave excluded sources out; their rows and raw copies stay, so the change can be undone.
+ */
+export function applyExclusions(db: Database.Database, config: Config): { excluded: number; restored: number } {
+  const rows = db
+    .prepare(`SELECT s.id, s.excluded, o.origin_path FROM sources s JOIN raw_file_origins o ON o.sha256 = s.raw_sha256 WHERE s.kind IN ('cc', 'mem') ORDER BY s.id`)
+    .all() as { id: number; excluded: number; origin_path: string }[];
+  const out = new Map<number, { was: number; now: boolean }>();
+  for (const r of rows) {
+    const project = PROJECT_OF.exec(r.origin_path.replaceAll("\\", "/"))?.[1];
+    const s = out.get(r.id) ?? { was: r.excluded, now: false };
+    if (project && isExcludedProject(project, config)) s.now = true;
+    out.set(r.id, s);
+  }
+  const set = db.prepare("UPDATE sources SET excluded = ? WHERE id = ?");
+  const report = { excluded: 0, restored: 0 };
+  db.transaction(() => {
+    for (const [id, s] of out) {
+      if (s.now === (s.was === 1)) continue;
+      set.run(s.now ? 1 : 0, id);
+      if (s.now) report.excluded++;
+      else report.restored++;
+    }
+  })();
+  return report;
 }
 
 /**

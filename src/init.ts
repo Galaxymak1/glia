@@ -9,9 +9,10 @@ import type Database from "better-sqlite3";
 import { migrate, migrations, schemaVersion } from "./migrations.js";
 import { installService, type Platform, serviceActive, type ServiceDeps } from "./service.js";
 import { desktopConfigPath } from "./clients.js";
+import { applyExclusions } from "./sources.js";
 
 export interface Check {
-  id: "node" | "legacy" | "database" | "embeddings" | "config" | "clients" | "service" | "first-run" | "index";
+  id: "node" | "legacy" | "database" | "embeddings" | "config" | "clients" | "service" | "first-run" | "index" | "claims";
   ok: boolean;
   detail: string;
   fix?: string;
@@ -182,6 +183,14 @@ export async function checks(env: InitEnv): Promise<Check[]> {
       : { id: "first-run", ok: false, detail: "nothing ingested yet", fix: "Run: glia init" },
   );
   out.push({ id: "index", ok: true, detail: !inProcess && ollama !== "ready" ? "meaning index off (no Ollama)" : pendingIndex ? `meaning index: ${pendingIndex} turns still to embed (the daemon is building it)` : "meaning index: complete" });
+  // Every claim is committed to the vault with git (src/vault.ts): without it, extraction stops at the first one.
+  out.push(
+    !env.hasApiKey()
+      ? { id: "claims", ok: true, detail: "claims off (no ANTHROPIC_API_KEY in ~/.config/glia/env)" }
+      : env.which("git")
+        ? { id: "claims", ok: true, detail: "claims on: extracted every night at 02:00 (Europe/Paris)" }
+        : { id: "claims", ok: false, detail: "git is not installed, and the vault commits every claim with it", fix: "Install git (https://git-scm.com/downloads), then run: glia doctor" },
+  );
   return out;
 }
 
@@ -236,6 +245,9 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
   const inProcess = config0.embedding?.provider !== "ollama" && embeddingSettings(config0).model === DEFAULT_EMBED_MODEL && (await env.inProcess.available());
   if (failing.has("embeddings")) todo.push(inProcess ? "download the embedding model (634 MB)" : "pull the embedding model through Ollama");
   if (failing.has("config")) todo.push(`write ${env.configPath}`);
+  // Patterns named on a later run (a second /glia:setup) are added to the config already written.
+  const newExclude = failing.has("config") ? [] : opts.exclude.filter((p) => !config0.claudeCode.exclude.includes(p));
+  if (newExclude.length) todo.push(`add ${newExclude.join(", ")} to the projects glia never stores`);
   for (const p of pending) todo.push(p.plan.kind === "edit" ? `edit ${p.plan.path} to add glia` : p.plan.kind === "commands" ? `run: ${p.plan.argv.map((a) => a.join(" ")).join("; ")}` : `show how to add glia to ${p.client}`);
   if (failing.has("first-run")) todo.push(`ingest ${env.projectsDir}`);
   if (failing.has("service") && !opts.noService) todo.push("start glia daemon at login");
@@ -287,12 +299,22 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
       });
     } else await pullModel(env, url, model, io.say);
   }
-  if (failing.has("config")) {
+  if (failing.has("config") || newExclude.length) {
     const existing = env.fs.read(env.configPath);
     const merged = existing ? (JSON.parse(existing) as Record<string, unknown>) : {};
     const claudeCode = { ...((merged.claudeCode as Record<string, unknown> | undefined) ?? {}) };
     claudeCode.exclude = [...new Set([...((claudeCode.exclude as string[] | undefined) ?? []), ...exclude])];
     env.fs.write(env.configPath, `${JSON.stringify({ ...merged, claudeCode }, null, 2)}\n`, 0o600);
+    // Sessions already stored from a project now excluded leave search at once, not at the next sweep.
+    if (!failing.has("database") && exclude.length) {
+      const db = env.openDb();
+      try {
+        const r = applyExclusions(db, env.loadConfig());
+        if (r.excluded) io.say(`${r.excluded} sources already stored from excluded projects are hidden from search and extraction`);
+      } finally {
+        db.close();
+      }
+    }
   }
   for (const { client, plan } of pending) {
     if (plan.kind === "commands") for (const argv of plan.argv) await env.run(argv);

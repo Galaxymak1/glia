@@ -7,7 +7,7 @@ import { isExcludedPath, isExcludedProject } from "../src/config.js";
 import { openDb } from "../src/db.js";
 import { EvidenceStore } from "../src/evidence.js";
 import { migrate } from "../src/migrations.js";
-import { indexClaudeCodeFile, writeSource } from "../src/sources.js";
+import { applyExclusions, indexClaudeCodeFile, writeSource } from "../src/sources.js";
 import { CC_PARSER_VERSION } from "../src/parsers/claudeCode.js";
 
 const S = "4e72e044-0bd2-40ea-afbf-fa36accc5e46";
@@ -118,6 +118,37 @@ describe("indexClaudeCodeFile", () => {
     expect(ix(put(sessionPath("-home-me-work-acme"), v1, "2026-10-20T10:00:00Z"), config)).toMatchObject({ status: "excluded" });
     expect(ix(put("/home/me/notes.md", "notes\n", "2026-10-20T10:00:00Z"), config)).toBeNull();
     expect([sources(), turns()]).toEqual([[], []]);
+  });
+});
+
+describe("applyExclusions", () => {
+  const flags = () => db.prepare("SELECT external_id, excluded FROM sources ORDER BY external_id").all();
+  it("hides a project excluded after it was ingested, and shows it again when the pattern goes", () => {
+    const work = (cfg: Config) => applyExclusions(db, cfg);
+    ix(put(sessionPath("-home-me-work-acme"), v1, "2026-10-20T10:00:00Z"), NO_EXCLUDES);
+    ix(put(`${PROJECTS}/-home-me-work-acme/${S}/subagents/agent-a1.jsonl`, v2, "2026-10-20T10:00:00Z"), NO_EXCLUDES);
+    ix(put(`${PROJECTS}/-home-me-work-acme/memory/notes.md`, "# notes\n", "2026-10-20T10:00:00Z"), NO_EXCLUDES);
+    const other = "11111111-2222-3333-4444-555555555555";
+    ix(put(`${PROJECTS}/-home-me-dev-x/${other}.jsonl`, v1.replaceAll(S, other), "2026-10-20T10:00:00Z"), NO_EXCLUDES);
+    // The same bytes read again from a Windows checkout of another project: one more origin.
+    put(`C:\\Users\\me\\.claude\\projects\\-home-me-dev-glia\\${other}.jsonl`, v1.replaceAll(S, other), "2026-10-21T10:00:00Z");
+    expect(flags()).toEqual([
+      { external_id: "-home-me-work-acme/memory/notes.md", excluded: 0 },
+      { external_id: other, excluded: 0 },
+      { external_id: S, excluded: 0 },
+      { external_id: `${S}/agent-a1`, excluded: 0 },
+    ]);
+    expect(work({ claudeCode: { exclude: ["-home-me-work-*"] } })).toEqual({ excluded: 3, restored: 0 });
+    expect(flags()).toEqual([
+      { external_id: "-home-me-work-acme/memory/notes.md", excluded: 1 },
+      { external_id: other, excluded: 0 },
+      { external_id: S, excluded: 1 },
+      { external_id: `${S}/agent-a1`, excluded: 1 },
+    ]);
+    // Any origin names a project, a Windows one too: the source is out if one of them is excluded.
+    expect(work({ claudeCode: { exclude: ["-home-me-dev-glia"] } })).toEqual({ excluded: 1, restored: 3 });
+    expect(work(NO_EXCLUDES)).toEqual({ excluded: 0, restored: 1 });
+    expect(work(NO_EXCLUDES)).toEqual({ excluded: 0, restored: 0 });
   });
 });
 

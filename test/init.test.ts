@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { openDb } from "../src/db.js";
 import { checks, type InitEnv, type InitIo, type InitOptions, runInit } from "../src/init.js";
-import { writeSource } from "../src/sources.js";
+import { indexClaudeCodeFile, writeSource } from "../src/sources.js";
+import { EvidenceStore } from "../src/evidence.js";
 import { search } from "../src/search.js";
 import { tmpDir } from "./helpers.js";
 
@@ -168,6 +169,36 @@ describe("runInit", () => {
     expect(written).toEqual([]);
     expect(mutating()).toEqual([]);
     expect(said.join("\n")).toMatch(/glia will:/);
+  });
+
+  it("--exclude on a later run adds to the config it already wrote", async () => {
+    const env = makeEnv();
+    await runInit(env, yesIo(), yesOpts);
+    // A session of that project, stored before it was excluded.
+    const S = "11111111-2222-3333-4444-555555555555";
+    let db = env.openDb();
+    const store = new EvidenceStore(db, join(dirname(env.dbPath), "raw"));
+    const raw = store.put(`${env.projectsDir}/-home-me-work-acme/${S}.jsonl`, Buffer.from(`${JSON.stringify({ type: "user", uuid: "w1", parentUuid: null, sessionId: S, message: { role: "user", content: "acme" } })}\n`)).file;
+    indexClaudeCodeFile(db, store, raw, { claudeCode: { exclude: [] } }, raw.origin_path);
+    db.close();
+    said = [];
+    await runInit(env, yesIo(), { ...yesOpts, exclude: ["-home-me-work-*"] });
+    expect(said.join("\n")).toMatch(/add -home-me-work-\* to the projects glia never stores/);
+    expect(said.join("\n")).toMatch(/1 sources already stored from excluded projects are hidden/);
+    db = env.openDb();
+    expect(db.prepare("SELECT excluded FROM sources WHERE external_id = ?").get(S)).toEqual({ excluded: 1 });
+    db.close();
+    expect(JSON.parse(readFileSync(env.configPath, "utf8")).claudeCode.exclude).toEqual(["-home-me-work-*"]);
+    said = [];
+    await runInit(env, yesIo(), { ...yesOpts, exclude: ["-home-me-work-*"] });
+    expect(said.join("\n")).toMatch(/Nothing changed/);
+  });
+
+  it("with an API key, claims need git: the vault commits every claim with it", async () => {
+    const claims = async (over: Partial<InitEnv>) => (await checks(makeEnv(over))).find((c) => c.id === "claims")!;
+    expect(await claims({})).toMatchObject({ ok: true, detail: expect.stringMatching(/claims off/) });
+    expect(await claims({ hasApiKey: () => true, which: (c) => (c === "git" ? "/usr/bin/git" : null) })).toMatchObject({ ok: true, detail: expect.stringMatching(/claims on/) });
+    expect(await claims({ hasApiKey: () => true, which: () => null })).toMatchObject({ ok: false, fix: expect.stringMatching(/Install git/) });
   });
 
   it("--dry-run names the Claude Code projects found, so they can be excluded", async () => {
