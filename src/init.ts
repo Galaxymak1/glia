@@ -252,6 +252,11 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
       exclude = [...new Set([...exclude, ...picked.map((i) => items[i]!.name)])];
     }
   }
+  // What the question would have offered, for whoever picks the exclusions from the plan (/glia:setup).
+  if (failing.has("config") && opts.dryRun && env.fs.exists(env.projectsDir)) {
+    const items = folderItems(env);
+    if (items.length) io.say(`Claude Code projects found (--exclude <name> leaves one out):\n${items.map((i) => `  - ${i.label}`).join("\n")}`);
+  }
   io.say(`glia will:\n${todo.map((t) => `  - ${t}`).join("\n")}`);
   if (!opts.dryRun) io.say("(a few minutes, mostly the one-time model download)");
   if (opts.dryRun) return before;

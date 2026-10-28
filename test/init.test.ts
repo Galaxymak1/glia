@@ -142,7 +142,8 @@ describe("runInit", () => {
     expect(spawned.map((a) => a.join(" "))).toEqual(expect.arrayContaining([expect.stringMatching(/systemctl --user enable --now/), "claude mcp add --scope user glia -- /usr/bin/glia mcp"]));
     expect(JSON.parse(readFileSync(env.configPath, "utf8")).claudeCode.exclude).toEqual(["-home-me-work-*"]);
     expect(said.join("\n")).toMatch(/Ready: 1 sources, 1 turns searchable now\. Try: glia search "\w+"/);
-    expect(statSync(env.configPath).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX modes: chmod does nothing there.
+    if (process.platform !== "win32") expect(statSync(env.configPath).mode & 0o777).toBe(0o600);
   });
 
   it("asks at most two questions and is searchable before anything is embedded", async () => {
@@ -167,6 +168,11 @@ describe("runInit", () => {
     expect(written).toEqual([]);
     expect(mutating()).toEqual([]);
     expect(said.join("\n")).toMatch(/glia will:/);
+  });
+
+  it("--dry-run names the Claude Code projects found, so they can be excluded", async () => {
+    await runInit(makeEnv(), yesIo(), { ...yesOpts, dryRun: true });
+    expect(said.join("\n")).toMatch(/Claude Code projects found \(--exclude <name> leaves one out\):\n {2}- -home-me-dev-glia {2}\(1 sessions, last \d{4}-\d\d-\d\d\)/);
   });
 
   it("second run changes nothing", async () => {
