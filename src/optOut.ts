@@ -91,9 +91,10 @@ export function optOut(db: Database.Database, rawDir: string, sessionId: string,
   const copies = db
     .prepare(
       `SELECT DISTINCT f.sha256, f.stored_path FROM raw_files f JOIN raw_file_origins o ON o.sha256 = f.sha256
-       WHERE o.origin_path LIKE ? OR o.origin_path LIKE ?`,
+       WHERE o.origin_path LIKE ? OR o.origin_path LIKE ? OR o.origin_path LIKE ? OR o.origin_path LIKE ?`,
     )
-    .all(`%/${sessionId}.jsonl`, `%/${sessionId}/%`) as { sha256: string; stored_path: string }[];
+    // Read on Windows, an origin uses backslashes (LIKE has no escape character here).
+    .all(`%/${sessionId}.jsonl`, `%/${sessionId}/%`, `%\\${sessionId}.jsonl`, `%\\${sessionId}\\%`) as { sha256: string; stored_path: string }[];
   const rawFile = db.prepare("SELECT stored_path FROM raw_files WHERE sha256 = ?");
   const bySha = new Map(copies.map((c) => [c.sha256, c.stored_path]));
   for (const s of sources) {
@@ -137,8 +138,9 @@ export class OptOutCheck {
     if (known !== undefined) return known;
     let result = isOptedOut(this.db, sessionId);
     if (!result) {
-      const at = path.lastIndexOf(`/${sessionId}/`);
-      const transcript = at >= 0 ? `${path.slice(0, at)}/${sessionId}.jsonl` : path;
+      // The last `<id>` folder on the path, with either separator (a session id is hex and dashes).
+      const folder = new RegExp(`^(.*)([\\\\/])${sessionId}[\\\\/]`).exec(path);
+      const transcript = folder ? `${folder[1]}${folder[2]}${sessionId}.jsonl` : path;
       result = existsSync(transcript) && hasOptOutMarker(readFileSync(transcript, "utf8"));
     }
     this.decided.set(sessionId, result);

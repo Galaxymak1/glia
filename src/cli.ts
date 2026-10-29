@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -15,7 +15,8 @@ import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
 import { pruneSuperseded, removeStaleTmp } from "./prune.js";
 import { isOptedOut, OPT_OUT_MARKER, OptOutCheck, optOut, sessionOf } from "./optOut.js";
 import { isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
-import { indexClaudeCodeFile } from "./sources.js";
+import { applyExclusions, indexClaudeCodeFile } from "./sources.js";
+import { gitRemoteOf } from "./projects.js";
 import { ingestExportZip, mayBeExportFile } from "./claudeAiExport.js";
 import { scrubText } from "./scrub.js";
 import { migrate, schemaVersion } from "./migrations.js";
@@ -23,7 +24,8 @@ import { syncClaims } from "./claimIndex.js";
 import { anthropicBatchClient, planExtraction, pollExtraction, submitExtraction } from "./extractor.js";
 import { formatValidation, validateCandidates } from "./validate.js";
 import { dedupCandidates } from "./dedup.js";
-import { expireProposals, routeCandidates } from "./route.js";
+import { formatObserve, observe } from "./observe.js";
+import { expireProposals, rerouteProposals, routeCandidates } from "./route.js";
 import { reviewStats, runReview, type ReviewIo } from "./review.js";
 import { auditReport, formatAudit, sampleAudit } from "./audit.js";
 import { createInterface, emitKeypressEvents } from "node:readline";
@@ -45,6 +47,8 @@ Commands:
                                 Set glia up: database, embeddings, config, MCP clients, daemon, first ingest;
                                 safe to run again. --db-only just creates or migrates the database
   doctor                        Check the setup and print the fix for whatever is broken
+  observe                       One screen of the brain: evidence ingested, the meaning index,
+                                extraction, claims, the review inbox, the audit, jobs, the last eval
   scrub --dry-run [path...]     Report the secrets scrubbing would remove (default: ~/.claude/projects)
   ingest <path...>              Scrub and store raw files, then parse Claude Code transcripts and
                                 memory, and claude.ai export ZIPs, into sources and turns (idempotent).
@@ -253,6 +257,8 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
       }
     }
     const prune = pruneSuperseded(db, store);
+    // Projects excluded since their sessions were stored: hidden from search, MCP and extraction.
+    const exclusions = applyExclusions(db, config);
     const mb = (n: number) => (n / 1e6).toFixed(1);
     console.log(
       `Stored ${created} new files (${mb(bytes)} MB, ${mb(storedBytes)} MB compressed, ${redactions} secrets redacted); ` +
@@ -278,6 +284,9 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
           `(${exportTotals.turnsWritten} turns written, ${exportTotals.turnsRemoved} removed)` +
           (left.length ? `; entries not ingested: ${left.join(", ")}` : ""),
       );
+    }
+    if (exclusions.excluded || exclusions.restored) {
+      console.log(`Exclusions changed: ${exclusions.excluded} sources now in excluded projects are hidden; ${exclusions.restored} shown again`);
     }
     if (optedOut.size) {
       console.log(
@@ -371,11 +380,13 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
         const merged = d.merged.intoClaims + d.merged.intoProposals + d.merged.intoCandidates;
         if (merged || d.similar) console.log(`Deduplicated: ${merged} merged (${d.merged.intoClaims} into claims, ${d.merged.intoProposals} into proposals), ${d.similar} similar to a claim${d.exactOnly ? "; meaning index unavailable, exact matches only" : ""}`);
         const routed = routeCandidates(db, vault);
+        const rerouted = rerouteProposals(db, vault);
         const expired = expireProposals(db, vault);
-        if (routed.accepted || routed.queued || routed.previouslyRejected || routed.invalid || expired) {
+        if (routed.accepted || routed.queued || routed.previouslyRejected || routed.invalid || rerouted.accepted || expired) {
           console.log(
-            `Routed: ${routed.accepted} auto-accepted, ${routed.queued} queued (${routed.audits} picked for audit), ${routed.previouslyRejected} previously rejected` +
+            `Routed: ${routed.accepted} auto-accepted, ${routed.queued} queued (${routed.audits + rerouted.audits} picked for audit), ${routed.previouslyRejected} previously rejected` +
               (routed.invalid ? `, ${routed.invalid} invalid` : "") +
+              (rerouted.accepted ? `; ${rerouted.accepted} proposals auto-accepted under the current routing` : "") +
               (expired ? `; ${expired} proposals expired` : ""),
           );
         }
@@ -465,6 +476,8 @@ async function review(dbPath: string, values: { stats?: boolean; audit?: boolean
     }
     const vault = new Vault(vaultDirFor(dbPath));
     for (const e of (await syncClaims(db, vault, null)).errors) console.error(`glia: ${scrubText(e).value}`);
+    const rerouted = rerouteProposals(db, vault);
+    if (rerouted.accepted) console.log(`${rerouted.accepted} proposals auto-accepted under the current routing; they left the inbox.`);
     expireProposals(db, vault);
     const io = terminalIo();
     try {
@@ -473,6 +486,21 @@ async function review(dbPath: string, values: { stats?: boolean; audit?: boolean
     } finally {
       io.close();
     }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+function observeCommand(dbPath: string, config: Config): number {
+  if (!existsSync(dbPath)) {
+    console.error(`glia: no database at ${dbPath} (run: glia init)`);
+    return 1;
+  }
+  const db = openDb(dbPath);
+  try {
+    const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
+    console.log(formatObserve(observe(db, dbPath, config, embeddingSettings(config).model), { color }));
     return 0;
   } finally {
     db.close();
@@ -655,14 +683,7 @@ async function sessionStartCommand(dbPath: string, config: Config): Promise<numb
     if (typeof cwd !== "string" || !existsSync(dbPath)) return 0;
     const db = openDb(dbPath);
     try {
-      const gitRemote = (dir: string) => {
-        try {
-          return execFileSync("git", ["-C", dir, "remote", "get-url", "origin"], { encoding: "utf8", timeout: 1000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
-        } catch {
-          return null;
-        }
-      };
-      const out = sessionStartHook({ cwd }, { db, config, gitRemote });
+      const out = sessionStartHook({ cwd }, { db, config, gitRemote: gitRemoteOf });
       if (out) process.stdout.write(`${out}\n`);
     } finally {
       db.close();
@@ -793,6 +814,8 @@ async function main(argv: string[]): Promise<number> {
       }
       return checksOut.every((c) => c.ok) ? 0 : 1;
     }
+    case "observe":
+      return observeCommand(values.db ?? defaultDbPath(), loadConfig());
     case "scrub":
       if (!values["dry-run"]) {
         console.error("glia scrub needs --dry-run: scrubbed copies are written by ingest once the evidence store (#2) lands.");

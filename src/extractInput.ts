@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Config } from "./config.js";
 import { extractView, type RenderableSource } from "./extractPrompt.js";
-import { scopeForSource } from "./projects.js";
+import { gitRemoteOf, scopeForSource } from "./projects.js";
 import { scrubText } from "./scrub.js";
 
 /** Artifacts (caa) are Claude's own output: nothing in them is the user's to claim. */
@@ -60,9 +60,17 @@ export function requestText(text: string, recalled: string[]): string {
 }
 
 /** Sources whose extraction input changed since they were last submitted, with their turns. */
-export function selectForExtraction(db: Database.Database, opts: { from?: string; config?: Config } = {}): SelectedSource[] {
+export function selectForExtraction(db: Database.Database, opts: { from?: string; config?: Config; gitRemote?: (dir: string) => string | null } = {}): SelectedSource[] {
   const recalled = recalledStatements(db);
   const config = opts.config ?? { claudeCode: { exclude: [] } };
+  // The remote of the folder a session ran in, read as the SessionStart hook reads it, so the
+  // claims of a project carry the scope its sessions are briefed on.
+  const remotes = new Map<string, string | null>();
+  const remoteOf = (cwd: string | null) => {
+    if (!cwd) return null;
+    if (!remotes.has(cwd)) remotes.set(cwd, (opts.gitRemote ?? gitRemoteOf)(cwd));
+    return remotes.get(cwd)!;
+  };
   const sources = db
     .prepare(
       `SELECT s.id, s.kind, s.title, s.created_at, s.cwd, s.project_hint, e.input_sha256 AS last FROM sources s LEFT JOIN extraction_state e ON e.source_id = s.id
@@ -86,7 +94,7 @@ export function selectForExtraction(db: Database.Database, opts: { from?: string
     if (!turns.length) continue;
     const inputSha256 = hash.digest("hex");
     if (inputSha256 === s.last) continue;
-    picked.push({ sourceId: s.id, inputSha256, source: { kind: s.kind, title: s.title, created_at: s.created_at, scope: scopeForSource({ cwd: s.cwd, git_remote: null, project_hint: s.project_hint }, config) }, turns });
+    picked.push({ sourceId: s.id, inputSha256, source: { kind: s.kind, title: s.title, created_at: s.created_at, scope: scopeForSource({ cwd: s.cwd, git_remote: remoteOf(s.cwd), project_hint: s.project_hint }, config) }, turns });
   }
   return picked;
 }

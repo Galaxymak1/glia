@@ -37,6 +37,8 @@ What it sets up, in order:
 
 The plugin gives Claude the glia tools, a briefing at the start of each session, and the commands `/glia:setup`, `/glia:recall`, `/glia:search` and `/glia:status`. It does not contain glia itself: `/glia:setup` has Claude install the npm package and run `glia init` with you. Until then, each session starts with a line telling you to run it.
 
+When `glia` is not already on your PATH, the plugin installs it for you alone, in its data folder (`~/.claude/plugins/data/glia-glia/`): no `sudo`, and npm's settings are left as they are. That copy is the plugin's version of glia and is removed when you uninstall the plugin; your database and config, under `~/.local/share/glia/` and `~/.config/glia/`, stay. A `glia` you installed yourself with `npm i -g` is used instead when there is one.
+
 ## Adding history
 
 `glia init` reads your Claude Code sessions (`~/.claude/projects`, or `%USERPROFILE%\.claude\projects` on Windows) and the daemon keeps them current. Anything else goes through `glia ingest`, which takes any mix of files and folders:
@@ -53,6 +55,7 @@ Secrets are scrubbed before anything is stored, projects you excluded stay out, 
 | Symptom | Fix |
 | --- | --- |
 | `glia: command not found` after `npm i -g` | Add the npm global folder (`npm config get prefix`, then `bin/`) to your PATH. |
+| `EACCES` from `npm i -g` | npm's global folder belongs to root. Install from Claude Code instead (`/glia:setup` installs in a folder you own), or point npm at one: `npm config set prefix ~/.npm-global` and add `~/.npm-global/bin` to your PATH. Never `sudo npm`. |
 | Keyword search only | Run `glia init`. If the model download is blocked, install Ollama and run `glia init` again. |
 | Claims never appear | Add `ANTHROPIC_API_KEY=sk-ant-…` to `~/.config/glia/env`. |
 | `glia daemon is already running` | One daemon per machine is intended. `glia daemon status` shows it. |

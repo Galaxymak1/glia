@@ -2,6 +2,7 @@
 // over the evidence layer, `recall` and `brief` over claims. Read-only; every result stays well
 // under 25k tokens.
 
+import { readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
@@ -155,8 +156,11 @@ export function formatOpen(r: NonNullable<ReturnType<typeof openEvidence>>): str
  * claim retracted or corrected in Obsidian is served as it now reads (statements edited since are
  * found by keyword until the next `glia index --claims` embeds them).
  */
+/** The package version, as the server reports it to clients (src/ and dist/ both sit next to package.json). */
+const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
 export function createMcpServer(db: Database.Database, embedder: Embedder | null, vault?: Vault): McpServer {
-  const server = new McpServer({ name: "glia", version: "0.0.0" }, { capabilities: { tools: {} } });
+  const server = new McpServer({ name: "glia", version: VERSION }, { capabilities: { tools: {} } });
 
   server.registerTool(
     "search_evidence",

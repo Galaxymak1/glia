@@ -1,6 +1,7 @@
 {
   "name": "glia",
   "owner": { "name": "Kylian" },
+  "metadata": { "description": "glia: memory for Claude, self-hosted, over your own Claude conversations" },
   "plugins": [
     {
       "name": "glia",

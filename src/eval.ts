@@ -81,6 +81,13 @@ export function parseArmA(text: string): Map<string, string> {
 /** Runs `claude` with these arguments and returns its stdout; the seam the tests replace. */
 export type ClaudeRunner = (args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<string>;
 
+/** Why a `claude -p` run failed: `-p` prints limit and sign-in errors on stdout, so stderr alone can be empty. */
+export function claudeFailure(code: number | null, signal: NodeJS.Signals | null, stderr: string, stdout: string, timeoutMs: number): string {
+  if (signal) return `claude killed (${signal}) after ${timeoutMs / 1000} s`;
+  const said = (stderr.trim() || stdout.trim() || "(no output)").slice(0, 300);
+  return `claude exited ${code}: ${said}`;
+}
+
 export const runClaude: ClaudeRunner = (args, { cwd, timeoutMs }) =>
   new Promise((resolve, reject) => {
     const child = spawn("claude", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
@@ -100,7 +107,7 @@ export const runClaude: ClaudeRunner = (args, { cwd, timeoutMs }) =>
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       if (code === 0) resolve(out);
-      else reject(new Error(signal ? `claude killed (${signal}) after ${timeoutMs / 1000} s` : `claude exited ${code}: ${err.trim().slice(0, 300)}`));
+      else reject(new Error(claudeFailure(code, signal, err, out, timeoutMs)));
     });
   });
 

@@ -1,0 +1,6 @@
+# LF everywhere, whatever the checkout: the plugin ships from git (marketplace clones), and its
+# skills' front matter and the hook scripts are read as LF.
+* text=auto eol=lf
+*.png binary
+*.gz binary
+*.zip binary

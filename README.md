@@ -42,7 +42,7 @@ glia init
 glia search "which database did I pick"
 ```
 
-Meaning search finishes building in the background, and `glia doctor` shows how far along it is and the fix for anything that's off. Add an Anthropic API key to `~/.config/glia/env` and glia also distils your conversations into reviewable facts overnight; that is the one step that sends text to Anthropic, and it stays off until you add a key. More options, other clients and troubleshooting are in [docs/install.md](docs/install.md).
+Meaning search finishes building in the background, and `glia doctor` shows how far along it is and the fix for anything that's off. `glia observe` puts the whole brain on one screen: what is ingested and indexed, extraction, claims, what waits in the review inbox and why, the audit, the daemon's jobs and the last evaluation. Add an Anthropic API key to `~/.config/glia/env` and glia also distils your conversations into reviewable facts overnight; that is the one step that sends text to Anthropic, and it stays off until you add a key. More options, other clients and troubleshooting are in [docs/install.md](docs/install.md).
 
 ## Bring in your history
 

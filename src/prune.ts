@@ -33,7 +33,7 @@ export function isSuperseded(older: string, newer: string): boolean {
 }
 
 /** The transcript a raw copy was read from, as `<session>.jsonl` or `<session>/subagents/agent-<id>.jsonl`. */
-const TRANSCRIPT_ORIGIN = /\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\/subagents\/agent-[\w-]+)?\.jsonl)$/;
+const TRANSCRIPT_ORIGIN = /[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:[\\/]subagents[\\/]agent-[\w-]+)?\.jsonl)$/;
 
 /** Prunes, for every Claude Code transcript source, the older copies its current copy supersedes. */
 export function pruneSuperseded(db: Database.Database, store: EvidenceStore, now = new Date()): PruneReport {
@@ -49,9 +49,11 @@ export function pruneSuperseded(db: Database.Database, store: EvidenceStore, now
   for (const r of loose) {
     const m = TRANSCRIPT_ORIGIN.exec(r.origin_path);
     if (!m) continue;
-    const copies = byTranscript.get(m[1]!) ?? new Map<string, number>();
+    // Keyed with forward slashes, whichever the origin used (Windows paths use backslashes).
+    const key = m[1]!.replaceAll("\\", "/");
+    const copies = byTranscript.get(key) ?? new Map<string, number>();
     copies.set(r.sha256, r.stored_bytes);
-    byTranscript.set(m[1]!, copies);
+    byTranscript.set(key, copies);
   }
   if (!byTranscript.size) return report;
   const sources = db.prepare("SELECT external_id, raw_sha256 FROM sources WHERE kind = 'cc'").all() as { external_id: string; raw_sha256: string }[];

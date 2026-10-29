@@ -112,7 +112,8 @@ describe("EvidenceStore repair and safety", () => {
     expect([rowCount(), filesOnDisk().length]).toEqual([1, 1]);
   });
 
-  it("keeps the store owner-only", () => {
+  // Windows has no POSIX modes: chmod does nothing there.
+  it.skipIf(process.platform === "win32")("keeps the store owner-only", () => {
     const { file } = store.put("/a/s1.jsonl", transcript);
     expect(statSync(rawDir()).mode & 0o777).toBe(0o700);
     expect(statSync(join(rawDir(), file.sha256.slice(0, 2))).mode & 0o777).toBe(0o700);
@@ -124,6 +125,8 @@ describe("EvidenceStore repair and safety", () => {
     expect(file.origin_path).toBe("/tmp/[REDACTED:github_token]/notes.md");
     const P = "hunter2" + "hunter2";
     expect(store.put(`/tmp/DB_PASSWORD=${P}.md`, Buffer.from("other\n")).file.origin_path).toBe("/tmp/DB_PASSWORD=[REDACTED:env_secret].md");
+    // Either separator splits, whatever the platform: Windows takes both.
+    expect(store.put(`C:\\tmp\\DB_PASSWORD=${P}.md`, Buffer.from("third\n")).file.origin_path).toBe("C:\\tmp\\DB_PASSWORD=[REDACTED:env_secret].md");
   });
 
   it("refuses a .json file that does not parse", () => {

@@ -20,7 +20,7 @@ afterEach(() => {
 
 describe("vault", () => {
   it("lives next to the database", () => {
-    expect(vaultDirFor("/data/brain/brain.db")).toBe("/data/brain/vault");
+    expect(vaultDirFor("/data/brain/brain.db")).toBe(join("/data", "brain", "vault"));
   });
 
   it("writes a claim under claims/<year of recorded_at>/<id>.md", () => {

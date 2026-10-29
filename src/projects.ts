@@ -1,5 +1,7 @@
 // One scope per project: the folder a Claude Code session ran in names the project its facts
 // belong to, so the extractor does not have to guess a slug from the conversation.
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import type { Config } from "./config.js";
 
@@ -21,6 +23,16 @@ export function normalizeRemote(remote: string): string {
     .replace(/\.git$/, "")
     .replace(/\/+$/, "")
     .toLowerCase();
+}
+
+/** The `origin` remote of the repository `dir` is in; null when there is none, or no folder or git. */
+export function gitRemoteOf(dir: string): string | null {
+  if (!existsSync(dir)) return null;
+  try {
+    return execFileSync("git", ["-C", dir, "remote", "get-url", "origin"], { encoding: "utf8", timeout: 1000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 /**

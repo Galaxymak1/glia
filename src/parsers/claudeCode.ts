@@ -13,7 +13,7 @@ export type ClaudeCodeFile =
   | { kind: "subagent"; projectDir: string; sessionId: string; agentId: string }
   | { kind: "memory"; projectDir: string; name: string };
 
-const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+export const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const SESSION_PATH = new RegExp(String.raw`/projects/([^/]+)/(${UUID})\.jsonl$`);
 const SUBAGENT_PATH = new RegExp(String.raw`/projects/([^/]+)/(${UUID})/subagents/agent-([\w-]+)\.jsonl$`);
 const MEMORY_PATH = /\/projects\/([^/]+)\/memory\/([^/]+\.md)$/;

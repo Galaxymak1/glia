@@ -15,7 +15,7 @@ const cannotLoad = async () => {
 
 describe("createEmbedder", () => {
   it("modelPathFor puts the model under the data folder", () => {
-    expect(modelPathFor("/d/glia")).toBe("/d/glia/models/bge-m3-Q8_0.gguf");
+    expect(modelPathFor("/d/glia")).toBe(join("/d/glia", "models", "bge-m3-Q8_0.gguf"));
   });
 
   it("uses the in-process embedder when the module loads and the model file is there", async () => {

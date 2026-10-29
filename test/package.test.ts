@@ -1,15 +1,16 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tmpDir } from "./helpers.js";
 
 const readJson = (p: string) => JSON.parse(readFileSync(p, "utf8"));
 const BIN_CHECK = "plugin/bin-check.mjs";
+const win = process.platform === "win32";
 
 describe("package", () => {
   it("holds dist and the docs only", () => {
-    const out = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { encoding: "utf8" });
+    const out = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { encoding: "utf8", shell: win });
     const files: string[] = JSON.parse(out)[0].files.map((f: { path: string }) => f.path);
     expect(files.every((f) => /^(dist\/|README\.md$|LICENSE$|package\.json$)/.test(f))).toBe(true);
     expect(files.some((f) => /^(eval|test|src|docs|scripts|plugin)\//.test(f))).toBe(false);
@@ -47,6 +48,16 @@ describe("package", () => {
 
 describe("plugin/bin-check.mjs", () => {
   const run = (args: string[], env: Record<string, string>, input = "{}") => spawnSync(process.execPath, [BIN_CHECK, ...args], { env, input, encoding: "utf8" });
+  // What a command needs to start at all: cmd.exe and its folder on Windows.
+  const system: Record<string, string> = win ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows", ComSpec: process.env.ComSpec ?? "cmd.exe" } : {};
+  const systemPath = win ? join(system.SystemRoot!, "System32") : "/usr/bin:/bin";
+  /** A glia stand-in in `dir`, as npm would install it there: node runs `script` with glia's arguments. */
+  const stub = (dir: string, script: string) => {
+    writeFileSync(join(dir, "stub.cjs"), script);
+    if (win) return writeFileSync(join(dir, "glia.cmd"), `@"${process.execPath}" "%~dp0stub.cjs" %*\r\n`);
+    writeFileSync(join(dir, "glia"), `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/stub.cjs" "$@"\n`);
+    chmodSync(join(dir, "glia"), 0o755);
+  };
 
   it("missing glia points to setup", () => {
     const r = run(["hook", "session-start"], { PATH: "/nonexistent", HOME: "/nonexistent" });
@@ -62,21 +73,38 @@ describe("plugin/bin-check.mjs", () => {
 
   it("runs the glia on PATH with the arguments and the standard input", () => {
     const bin = tmpDir("glia-bin-");
-    const stub = join(bin, "glia");
-    writeFileSync(stub, '#!/bin/sh\necho "args:$*"\ncat\n');
-    chmodSync(stub, 0o755);
-    const r = run(["hook", "session-start"], { PATH: `${bin}:/usr/bin:/bin`, HOME: "/nonexistent" }, "stdin-text");
+    stub(bin, 'process.stdout.write(`args:${process.argv.slice(2).join(" ")}\\n`);\nprocess.stdin.pipe(process.stdout);\n');
+    const r = run(["hook", "session-start"], { ...system, PATH: `${bin}${delimiter}${systemPath}`, HOME: "/nonexistent" }, "stdin-text");
     expect(r.status).toBe(0);
     expect(r.stdout).toBe("args:hook session-start\nstdin-text");
   });
 
   it("finds glia under the npm global prefix when PATH lacks it", () => {
     const prefix = tmpDir("glia-prefix-");
-    mkdirSync(join(prefix, "bin"));
-    writeFileSync(join(prefix, "bin", "glia"), '#!/bin/sh\necho "from prefix"\n');
-    chmodSync(join(prefix, "bin", "glia"), 0o755);
-    const r = run(["mcp"], { PATH: "/usr/bin:/bin", HOME: "/nonexistent", npm_config_prefix: prefix });
+    // npm puts global commands in <prefix>/bin, and in the prefix itself on Windows.
+    const bin = win ? prefix : join(prefix, "bin");
+    mkdirSync(bin, { recursive: true });
+    stub(bin, 'process.stdout.write("from prefix\\n");\n');
+    const r = run(["mcp"], { ...system, PATH: systemPath, HOME: "/nonexistent", npm_config_prefix: prefix });
     expect(r.stdout).toBe("from prefix\n");
+  });
+
+  it("finds the glia that install put in the plugin's data folder", () => {
+    const data = tmpDir("glia-data-");
+    // install runs npm i --global --prefix <data>/npm: the same layout as a global install.
+    const bin = win ? join(data, "npm") : join(data, "npm", "bin");
+    mkdirSync(bin, { recursive: true });
+    stub(bin, 'process.stdout.write(`data:${process.argv.slice(2).join(" ")}\\n`);\n');
+    const base = { ...system, PATH: systemPath, HOME: "/nonexistent", npm_config_prefix: "/nonexistent" };
+    expect(run(["mcp"], { ...base, CLAUDE_PLUGIN_DATA: data }).stdout).toBe("data:mcp\n");
+    // Commands Claude runs do not get CLAUDE_PLUGIN_DATA: the skills pass the folder.
+    expect(run(["--data", data, "doctor"], base).stdout).toBe("data:doctor\n");
+  });
+
+  it("install without a data folder says how to call it", () => {
+    const r = run(["install"], { PATH: "/nonexistent", HOME: "/nonexistent" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/usage: bin-check\.mjs install <data folder>/);
   });
 
   it("ships next to its manifest", () => {

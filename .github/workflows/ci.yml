@@ -24,7 +24,7 @@ jobs:
       # node-gyp, which cannot find the runner's Visual Studio. The package ships prebuilds.
       - run: npm ci ${{ matrix.os == 'windows-latest' && '--ignore-scripts' || '' }}
       - run: npm run typecheck
-      - run: npx vitest run --testTimeout 30000
+      - run: npx vitest run --testTimeout 30000 --hookTimeout 30000
 
   fresh-install:
     strategy:

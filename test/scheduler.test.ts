@@ -55,16 +55,37 @@ describe("startScheduler", () => {
 
   it("a failing job is recorded failed and its key runs again", async () => {
     let runs = 0;
-    const s = startScheduler(db, [{ type: "t", key: () => "k1", run: async () => { runs++; throw new Error("boom"); }, timeoutMs: 1000 }], { tickMs: 5 });
+    const s = startScheduler(db, [{ type: "t", key: () => "k1", run: async () => { runs++; throw new Error("boom"); }, timeoutMs: 1000 }], { tickMs: 5, retryMs: 0 });
     await sleep(40);
     await s.stop();
     expect(runs).toBeGreaterThanOrEqual(2);
     expect(db.prepare("SELECT DISTINCT state FROM jobs").all()).toEqual([{ state: "failed" }]);
   });
 
+  it("a key that failed waits before it runs again, twice as long after each failure", async () => {
+    let at = Date.parse("2026-10-28T10:00:00Z");
+    let runs = 0;
+    const s = startScheduler(db, [{ type: "t", key: () => "k1", run: async () => { runs++; throw new Error("boom"); }, timeoutMs: 1000 }], { tickMs: 5, now: () => new Date(at) });
+    const after = async (minutes: number) => {
+      at += minutes * 60_000;
+      await sleep(25);
+    };
+    await after(0);
+    expect(runs).toBe(1);
+    await after(14);
+    expect(runs).toBe(1);
+    await after(1); // 15 min after the first failure
+    expect(runs).toBe(2);
+    await after(29);
+    expect(runs).toBe(2);
+    await after(1); // 30 min after the second
+    expect(runs).toBe(3);
+    await s.stop();
+  });
+
   it("never starts a job still running; a job past its timeout is failed and runs again", async () => {
     let runs = 0;
-    const s = startScheduler(db, [{ type: "hang", key: () => "k1", run: () => (runs++, new Promise(() => {})), timeoutMs: 20 }], { tickMs: 5 });
+    const s = startScheduler(db, [{ type: "hang", key: () => "k1", run: () => (runs++, new Promise(() => {})), timeoutMs: 20 }], { tickMs: 5, retryMs: 0 });
     await sleep(15);
     expect(runs).toBe(1);
     await sleep(40);
@@ -76,7 +97,7 @@ describe("startScheduler", () => {
   it("a run left running by a crashed process is failed at start, so its key can run", async () => {
     db.prepare("INSERT INTO jobs (type, state, run_key, started_at) VALUES ('t', 'running', 'k1', '2026-10-27T00:00:00Z')").run();
     let runs = 0;
-    const s = startScheduler(db, [{ type: "t", key: () => "k1", run: async () => void runs++, timeoutMs: 1000 }], { tickMs: 5 });
+    const s = startScheduler(db, [{ type: "t", key: () => "k1", run: async () => void runs++, timeoutMs: 1000 }], { tickMs: 5, retryMs: 0 });
     await sleep(30);
     await s.stop();
     expect(runs).toBe(1);

@@ -4,7 +4,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, relative, sep } from "node:path";
+import { dirname, extname, join, relative } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type Database from "better-sqlite3";
 import { scrubFile } from "./scan.js";
@@ -42,14 +42,16 @@ const sha256 = (data: Buffer | string) => createHash("sha256").update(data).dige
  */
 export const scrubPath = (path: string) =>
   path
-    .split(sep)
+    // Either separator, kept as it was: Windows takes both, and a path may mix them.
+    .split(/([\\/])/)
     .map((part) => {
+      if (part === "/" || part === "\\") return part;
       // Without its extension first: `DB_PASSWORD=x.md` would otherwise read as code (`a.b`).
       const ext = extname(part);
       const base = ext ? part.slice(0, -ext.length) : part;
       return scrubText(scrubText(base).value + ext).value;
     })
-    .join(sep);
+    .join("");
 
 export const rawDirFor = (dbPath: string) => join(dirname(dbPath), "raw");
 

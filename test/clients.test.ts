@@ -15,7 +15,7 @@ describe("detectClients", () => {
   it("knows where each platform keeps the Claude Desktop config", () => {
     expect(desktopConfigPath("darwin", "/Users/me", {})).toBe("/Users/me/Library/Application Support/Claude/claude_desktop_config.json");
     expect(desktopConfigPath("linux", "/home/me", {})).toBe("/home/me/.config/Claude/claude_desktop_config.json");
-    expect(desktopConfigPath("win32", "C:/Users/me", { APPDATA: "C:/Users/me/AppData/Roaming" })).toBe("C:/Users/me/AppData/Roaming/Claude/claude_desktop_config.json");
+    expect(desktopConfigPath("win32", "C:/Users/me", { APPDATA: "C:/Users/me/AppData/Roaming" })).toBe("C:\\Users\\me\\AppData\\Roaming\\Claude\\claude_desktop_config.json");
   });
 });
 

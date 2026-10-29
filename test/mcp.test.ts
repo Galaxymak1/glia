@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
@@ -56,6 +57,13 @@ beforeEach(async () => {
 afterEach(async () => {
   await client.close();
   db.close();
+});
+
+describe("initialize", () => {
+  it("reports the package version", async () => {
+    const { version } = JSON.parse(readFileSync("package.json", "utf8")) as { version: string };
+    expect(client.getServerVersion()).toEqual({ name: "glia", version });
+  });
 });
 
 describe("tools/list", () => {
