@@ -179,7 +179,8 @@ describe("runInit", () => {
     let db = env.openDb();
     const store = new EvidenceStore(db, join(dirname(env.dbPath), "raw"));
     const raw = store.put(`${env.projectsDir}/-home-me-work-acme/${S}.jsonl`, Buffer.from(`${JSON.stringify({ type: "user", uuid: "w1", parentUuid: null, sessionId: S, message: { role: "user", content: "acme" } })}\n`)).file;
-    indexClaudeCodeFile(db, store, raw, { claudeCode: { exclude: [] } }, raw.origin_path);
+    // With forward slashes, as projectsView gives ingest the path, Windows included.
+    indexClaudeCodeFile(db, store, raw, { claudeCode: { exclude: [] } }, raw.origin_path.replaceAll("\\", "/"));
     db.close();
     said = [];
     await runInit(env, yesIo(), { ...yesOpts, exclude: ["-home-me-work-*"] });
