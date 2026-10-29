@@ -24,6 +24,7 @@ import { syncClaims } from "./claimIndex.js";
 import { anthropicBatchClient, planExtraction, pollExtraction, submitExtraction } from "./extractor.js";
 import { formatValidation, validateCandidates } from "./validate.js";
 import { dedupCandidates } from "./dedup.js";
+import { formatObserve, observe } from "./observe.js";
 import { expireProposals, rerouteProposals, routeCandidates } from "./route.js";
 import { reviewStats, runReview, type ReviewIo } from "./review.js";
 import { auditReport, formatAudit, sampleAudit } from "./audit.js";
@@ -46,6 +47,8 @@ Commands:
                                 Set glia up: database, embeddings, config, MCP clients, daemon, first ingest;
                                 safe to run again. --db-only just creates or migrates the database
   doctor                        Check the setup and print the fix for whatever is broken
+  observe                       One screen of the brain: evidence ingested, the meaning index,
+                                extraction, claims, the review inbox, the audit, jobs, the last eval
   scrub --dry-run [path...]     Report the secrets scrubbing would remove (default: ~/.claude/projects)
   ingest <path...>              Scrub and store raw files, then parse Claude Code transcripts and
                                 memory, and claude.ai export ZIPs, into sources and turns (idempotent).
@@ -489,6 +492,21 @@ async function review(dbPath: string, values: { stats?: boolean; audit?: boolean
   }
 }
 
+function observeCommand(dbPath: string, config: Config): number {
+  if (!existsSync(dbPath)) {
+    console.error(`glia: no database at ${dbPath} (run: glia init)`);
+    return 1;
+  }
+  const db = openDb(dbPath);
+  try {
+    const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
+    console.log(formatObserve(observe(db, dbPath, config, embeddingSettings(config).model), { color }));
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function audit(dbPath: string, args: string[], values: { n?: string }): number {
   const db = openDb(dbPath);
   try {
@@ -796,6 +814,8 @@ async function main(argv: string[]): Promise<number> {
       }
       return checksOut.every((c) => c.ok) ? 0 : 1;
     }
+    case "observe":
+      return observeCommand(values.db ?? defaultDbPath(), loadConfig());
     case "scrub":
       if (!values["dry-run"]) {
         console.error("glia scrub needs --dry-run: scrubbed copies are written by ingest once the evidence store (#2) lands.");
