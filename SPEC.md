@@ -190,8 +190,8 @@ The inbox holds only exceptions and targets about 10 items and 2 minutes a day. 
 
 ### Routing policy
 
-- **Auto-accepted:** `user_stated` or `user_confirmed` claims that are non-sensitive and do not conflict with an active claim. 10% are resurfaced at random for audit.
-- **Queued:** `ai_suggested`, `ai_inferred`, `external_doc` and `imported_memory` claims; every decision; every supersession or contradiction proposal; everything marked sensitive.
+- **Auto-accepted:** `user_stated`, `user_confirmed`, `imported_memory` and `external_doc` claims, decisions included, that are non-sensitive and do not conflict with an active claim. 10% are resurfaced at random for audit.
+- **Queued (real risks only):** `ai_suggested` and `ai_inferred` claims; every supersession or contradiction proposal; everything marked sensitive.
 - **Expired:** proposals unreviewed after 30 days move to `expired` and leave the inbox, so it never becomes a backlog.
 
 ### Item card

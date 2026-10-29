@@ -1,6 +1,7 @@
 // Routing (#39, SPEC.md "Review inbox", routing policy): a validated candidate is either
-// auto-accepted, written to the vault and committed, or queued as a proposal for review. Only the
-// user's own words, not sensitive, not a decision and not near an existing claim, skip the inbox.
+// auto-accepted, written to the vault and committed, or queued as a proposal for review. Only real
+// risks are queued: a claim Claude originated, a sensitive one, or one near an existing claim.
+// Decisions, imported memory and external documents are auto-accepted and sampled by the audit.
 
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -10,7 +11,7 @@ import { z } from "zod";
 import { ulid } from "./ulid.js";
 import { appendLog, type Vault } from "./vault.js";
 
-export const AUTO_ORIGINS = ["user_stated", "user_confirmed"] as const;
+export const AUTO_ORIGINS = ["user_stated", "user_confirmed", "imported_memory", "external_doc"] as const;
 /** An unreviewed proposal leaves the inbox after this many days (SPEC.md "Expired"). */
 export const PROPOSAL_DAYS = 30;
 /** Share of auto-accepted claims resurfaced at random for audit. */
@@ -21,7 +22,6 @@ export const isoSeconds = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, "Z")
 
 export function routeFor(c: { origin: string; sensitivity: string; kind: string; similar_to: string | null }): { auto: true } | { auto: false; reason: string } {
   if (!(AUTO_ORIGINS as readonly string[]).includes(c.origin)) return { auto: false, reason: `origin:${c.origin}` };
-  if (c.kind === "decision") return { auto: false, reason: "decision" };
   if (c.sensitivity !== "normal") return { auto: false, reason: "sensitive" };
   if (c.similar_to) return { auto: false, reason: `similar:${c.similar_to}` };
   return { auto: true };
@@ -139,6 +139,47 @@ export function routeCandidates(db: Database.Database, vault: Vault, now = new D
     appendLog(db, vault, { actor: "extractor", action: "propose", claim_id: claim.id, payload: { proposal: id, reason: route.reason } }, now);
     setState.run("queued", route.reason, claim.id, row.id);
     report.queued++;
+  }
+  if (report.accepted) syncClaimRows(db, vault);
+  return report;
+}
+
+/**
+ * Applies the current routing to open claim and decision proposals, for those queued under an
+ * older, stricter policy: the ones it now auto-accepts are written to the vault as auto-accepted
+ * and leave the inbox; the others keep the reason the current routing gives. decision_ms stays null, so review --stats never counts them as decided.
+ */
+export function rerouteProposals(db: Database.Database, vault: Vault, now = new Date()): { accepted: number; audits: number } {
+  const open = db
+    .prepare("SELECT id, claim_json, statement_key, reason, similar_to FROM proposals WHERE state = 'open' AND kind IN ('claim', 'decision') ORDER BY id")
+    .all() as { id: string; claim_json: string; statement_key: string | null; reason: string; similar_to: string | null }[];
+  const relabel = db.prepare("UPDATE proposals SET reason = ? WHERE id = ?");
+  const close = db.prepare("UPDATE proposals SET state = 'accepted', decided_at = ? WHERE id = ?");
+  const candidate = db.prepare("UPDATE candidates SET state = 'accepted', reason = NULL WHERE claim_id = ? AND state = 'queued'");
+  const audit = db.prepare(
+    `INSERT INTO proposals (id, kind, claim_id, claim_json, statement_key, reason, similar_to, created_at, expires_at, state)
+     VALUES (?, 'audit', ?, NULL, ?, 'audit', NULL, ?, ?, 'open')`,
+  );
+  const created = isoSeconds(now);
+  const expires = isoSeconds(new Date(now.getTime() + PROPOSAL_DAYS * DAY_MS));
+  const report = { accepted: 0, audits: 0 };
+  for (const p of open) {
+    const c = ClaimSchema.parse(JSON.parse(p.claim_json));
+    const route = routeFor({ origin: c.origin, sensitivity: c.sensitivity, kind: c.kind, similar_to: p.similar_to });
+    if (!route.auto) {
+      if (route.reason !== p.reason) relabel.run(route.reason, p.id);
+      continue;
+    }
+    const claim: Claim = { ...c, status: "active", review: "auto_accepted" };
+    appendLog(db, vault, { actor: "extractor", action: "auto_accept", claim_id: claim.id, payload: { proposal: p.id, sources: sourcesOf(claim) } }, now);
+    vault.writeClaim(claim, `accept ${claim.id} from ${sourcesOf(claim)}: ${cut(claim.statement, 72)}`);
+    close.run(created, p.id);
+    candidate.run(claim.id);
+    report.accepted++;
+    if (isAuditPick(claim.id)) {
+      audit.run(`prp_${ulid(now.getTime())}`, claim.id, p.statement_key, created, expires);
+      report.audits++;
+    }
   }
   if (report.accepted) syncClaimRows(db, vault);
   return report;

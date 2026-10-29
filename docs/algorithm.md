@@ -229,13 +229,14 @@ Before routing, the claim index is synced with the vault (so an Obsidian edit co
 | Candidate | Goes to |
 | --- | --- |
 | a statement the user rejected before (same key) | dropped |
-| origin other than `user_stated` or `user_confirmed` | proposal, `origin:<origin>` |
-| kind `decision` | proposal, `decision` |
+| origin `ai_suggested` or `ai_inferred` (Claude's) | proposal, `origin:<origin>` |
 | sensitivity `sensitive` (health, money, relationships, legal matters, other people) | proposal, `sensitive` |
 | `similar_to` a claim | proposal, `similar:<id>` |
 | anything else | auto-accepted: `status: active`, `review: auto_accepted`, written to the vault and committed |
 
 - One auto-accepted claim in ten, picked by a hash of its id (the same claim is picked whatever run it came from), also gets an `audit` item in the inbox.
+- Decisions, `imported_memory` and `external_doc` claims are auto-accepted like the user's own: the inbox keeps only real risks, and the audit samples them like any other auto-accepted claim.
+- `glia review` and `glia extract poll` first apply the current routing to open proposals (`rerouteProposals`): one queued under an older, stricter policy and now auto-accepted is written to the vault and leaves the inbox, without counting as a review decision.
 - A proposal holds the whole claim it would become (`status: proposed`, `review: pending`). Proposals not decided within 30 days move to `expired` and leave the inbox, so it never becomes a backlog.
 - A candidate that cannot become a valid claim is dropped as `invalid: <field>: <reason>`, instead of stopping every later poll at the same place.
 - The claim file is committed before the candidate row changes; a crash in between leaves the candidate valid, and the next poll merges it into the claim it already wrote.
@@ -267,7 +268,7 @@ Nothing is deleted, every action is logged, and the time from card shown to key 
 
 ### Audit (`glia audit sample`, `glia review --audit`, `glia audit report`)
 
-`glia audit sample` opens audit items for 50 auto-accepted active claims never audited before, in a fixed hash order, so the same vault gives the same sample. Write precision is the share of judged audit items kept as written; an edited one is right in substance but not counted as kept. `glia audit report` gives it; the Phase 1 gate needs 80% or more, and zero claims auto-accepted with an origin other than `user_stated` or `user_confirmed`.
+`glia audit sample` opens audit items for 50 auto-accepted active claims never audited before, in a fixed hash order, so the same vault gives the same sample. Write precision is the share of judged audit items kept as written; an edited one is right in substance but not counted as kept. `glia audit report` gives it; the Phase 1 gate needs 80% or more, and zero claims auto-accepted with an origin of Claude's (`ai_suggested`, `ai_inferred`).
 
 ### `recall` and `brief`
 
@@ -336,7 +337,7 @@ Nothing is deleted, every action is logged, and the time from card shown to key 
 | WP13 extractor | #36 | Schema v10 (`candidates`, job payloads). Haiku 5.5 batches with token-counted requests and a resumable poll. |
 | WP14 validation | #37 | Verbatim quotes, origin lowered to what the cited turns support, valid time from the turn's timestamp, personality judgements dropped. |
 | WP15 deduplication | #38 | Merge at cosine 0.94 with shared and distinctive words, `similar` at 0.85, held without the meaning index. |
-| WP16 routing | #39 | Auto-accept for the user's own non-sensitive, non-decision, non-similar claims; proposals, audit picks, 30-day expiry. |
+| WP16 routing | #39 | Auto-accept for every non-sensitive, non-similar claim not of Claude's origin, decisions included; proposals, audit picks, 30-day expiry. |
 | WP17 review | #40 | `brain review`: one key per action, never a deletion, weekly rejection rate and decision time. |
 | WP18 recall and brief | #41 | `recall` and `brief` over MCP; `enrich@2` flags `<brain-claims>` as injected, and served claims are stripped from extraction input. |
 | WP19 audit | #42 | Schema v11 (arm C). Precision audit of 50 auto-accepted claims; arm C (claims only) in `brain eval`. |

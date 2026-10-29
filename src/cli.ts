@@ -24,7 +24,7 @@ import { syncClaims } from "./claimIndex.js";
 import { anthropicBatchClient, planExtraction, pollExtraction, submitExtraction } from "./extractor.js";
 import { formatValidation, validateCandidates } from "./validate.js";
 import { dedupCandidates } from "./dedup.js";
-import { expireProposals, routeCandidates } from "./route.js";
+import { expireProposals, rerouteProposals, routeCandidates } from "./route.js";
 import { reviewStats, runReview, type ReviewIo } from "./review.js";
 import { auditReport, formatAudit, sampleAudit } from "./audit.js";
 import { createInterface, emitKeypressEvents } from "node:readline";
@@ -377,11 +377,13 @@ async function extract(dbPath: string, args: string[], values: { from?: string; 
         const merged = d.merged.intoClaims + d.merged.intoProposals + d.merged.intoCandidates;
         if (merged || d.similar) console.log(`Deduplicated: ${merged} merged (${d.merged.intoClaims} into claims, ${d.merged.intoProposals} into proposals), ${d.similar} similar to a claim${d.exactOnly ? "; meaning index unavailable, exact matches only" : ""}`);
         const routed = routeCandidates(db, vault);
+        const rerouted = rerouteProposals(db, vault);
         const expired = expireProposals(db, vault);
-        if (routed.accepted || routed.queued || routed.previouslyRejected || routed.invalid || expired) {
+        if (routed.accepted || routed.queued || routed.previouslyRejected || routed.invalid || rerouted.accepted || expired) {
           console.log(
-            `Routed: ${routed.accepted} auto-accepted, ${routed.queued} queued (${routed.audits} picked for audit), ${routed.previouslyRejected} previously rejected` +
+            `Routed: ${routed.accepted} auto-accepted, ${routed.queued} queued (${routed.audits + rerouted.audits} picked for audit), ${routed.previouslyRejected} previously rejected` +
               (routed.invalid ? `, ${routed.invalid} invalid` : "") +
+              (rerouted.accepted ? `; ${rerouted.accepted} proposals auto-accepted under the current routing` : "") +
               (expired ? `; ${expired} proposals expired` : ""),
           );
         }
@@ -471,6 +473,8 @@ async function review(dbPath: string, values: { stats?: boolean; audit?: boolean
     }
     const vault = new Vault(vaultDirFor(dbPath));
     for (const e of (await syncClaims(db, vault, null)).errors) console.error(`glia: ${scrubText(e).value}`);
+    const rerouted = rerouteProposals(db, vault);
+    if (rerouted.accepted) console.log(`${rerouted.accepted} proposals auto-accepted under the current routing; they left the inbox.`);
     expireProposals(db, vault);
     const io = terminalIo();
     try {

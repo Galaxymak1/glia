@@ -4,7 +4,7 @@ import { evidenceEntry, statementKey } from "../src/claims.js";
 import { openDb } from "../src/db.js";
 import { CLAIM_KINDS, ORIGINS } from "../src/extractPrompt.js";
 import { migrate } from "../src/migrations.js";
-import { AUDIT_SHARE, AUTO_ORIGINS, expireProposals, isAuditPick, PROPOSAL_DAYS, routeCandidates, routeFor } from "../src/route.js";
+import { AUDIT_SHARE, AUTO_ORIGINS, expireProposals, isAuditPick, PROPOSAL_DAYS, rerouteProposals, routeCandidates, routeFor } from "../src/route.js";
 import { type TurnRow, writeSource } from "../src/sources.js";
 import { ulid } from "../src/ulid.js";
 import { Vault } from "../src/vault.js";
@@ -53,18 +53,24 @@ beforeEach(() => {
 });
 
 describe("routeFor", () => {
-  it.each(ORIGINS)("origin %s: auto-accepted only if user_stated or user_confirmed, normal, not a decision, not similar", (origin) => {
+  it.each(ORIGINS)("origin %s: auto-accepted only if not Claude's, normal and not similar, decisions included", (origin) => {
     for (const sensitivity of ["normal", "sensitive"])
       for (const kind of CLAIM_KINDS)
         for (const similar_to of [null, "clm_X"]) {
           const r = routeFor({ origin, sensitivity, kind, similar_to });
-          expect(r.auto).toBe((AUTO_ORIGINS as readonly string[]).includes(origin) && sensitivity === "normal" && kind !== "decision" && similar_to === null);
+          expect(r.auto).toBe((AUTO_ORIGINS as readonly string[]).includes(origin) && sensitivity === "normal" && similar_to === null);
         }
+  });
+
+  it("only Claude's origins are queued for origin; imported memory and external documents are not", () => {
+    expect([...AUTO_ORIGINS].sort()).toEqual(["external_doc", "imported_memory", "user_confirmed", "user_stated"]);
+    expect(routeFor({ origin: "ai_inferred", sensitivity: "normal", kind: "profile", similar_to: null })).toEqual({ auto: false, reason: "origin:ai_inferred" });
+    expect(routeFor({ origin: "user_stated", sensitivity: "normal", kind: "decision", similar_to: null })).toEqual({ auto: true });
   });
 
   it("names why an item is queued, in order", () => {
     expect(routeFor({ origin: "ai_suggested", sensitivity: "sensitive", kind: "decision", similar_to: null })).toEqual({ auto: false, reason: "origin:ai_suggested" });
-    expect(routeFor({ origin: "user_stated", sensitivity: "sensitive", kind: "decision", similar_to: null })).toEqual({ auto: false, reason: "decision" });
+    expect(routeFor({ origin: "user_stated", sensitivity: "sensitive", kind: "decision", similar_to: null })).toEqual({ auto: false, reason: "sensitive" });
     expect(routeFor({ origin: "user_stated", sensitivity: "sensitive", kind: "lesson", similar_to: null })).toEqual({ auto: false, reason: "sensitive" });
     expect(routeFor({ origin: "user_stated", sensitivity: "normal", kind: "lesson", similar_to: "clm_X" })).toEqual({ auto: false, reason: "similar:clm_X" });
   });
@@ -93,14 +99,22 @@ describe("routeCandidates", () => {
     expect(db.prepare("SELECT action FROM log WHERE claim_id = ?").all(c.id)).toEqual([{ action: "auto_accept" }]);
   });
 
-  it("every decision and every sensitive claim is queued, with its decision fields", () => {
+  it("a decision of the user's is auto-accepted with its decision fields", () => {
     const d = candidate({ kind: "decision", decision: { options: [{ option: "Postgres", rejected_because: "RAM" }, { option: "SQLite", rejected_because: null }], rationale: "zero ops", revisit_on: "2027-01-15" } });
+    expect(routeCandidates(db, vault, NOW)).toMatchObject({ accepted: 1, queued: 0 });
+    const c = claimRow(db, cand(d).claim_id!)!;
+    expect(c).toMatchObject({ kind: "decision", status: "active", review: "auto_accepted", rationale: "zero ops", revisit_on: "2027-01-15" });
+    expect(c.options).toEqual([{ option: "Postgres", rejected_because: "RAM" }, { option: "SQLite", rejected_because: null }]);
+  });
+
+  it("every sensitive claim and every decision Claude suggested is queued, with its decision fields", () => {
+    const d = candidate({ kind: "decision", origin: "ai_suggested", decision: { options: [{ option: "Postgres", rejected_because: "RAM" }, { option: "SQLite", rejected_because: null }], rationale: "zero ops", revisit_on: "2027-01-15" } });
     const s = candidate({ sensitivity: "sensitive" });
     const r = routeCandidates(db, vault, NOW);
     expect(r).toMatchObject({ accepted: 0, queued: 2 });
     expect([cand(d).state, cand(s).state]).toEqual(["queued", "queued"]);
     const [pd, ps] = proposals();
-    expect(pd).toMatchObject({ kind: "decision", reason: "decision", state: "open", expires_at: "2026-11-25T10:00:00Z" });
+    expect(pd).toMatchObject({ kind: "decision", reason: "origin:ai_suggested", state: "open", expires_at: "2026-11-25T10:00:00Z" });
     expect(ps).toMatchObject({ kind: "claim", reason: "sensitive" });
     const claim = JSON.parse(pd!.claim_json!);
     expect(claim).toMatchObject({ status: "proposed", review: "pending", rationale: "zero ops", revisit_on: "2027-01-15", options: [{ option: "Postgres", rejected_because: "RAM" }, { option: "SQLite", rejected_because: null }] });
@@ -161,6 +175,49 @@ describe("audit and expiry", () => {
     expect(expireProposals(db, vault, addDays(NOW, 31))).toBe(1);
     expect(proposals()[0]!.state).toBe("expired");
     expect(db.prepare("SELECT action FROM log WHERE action = 'expire'").all()).toHaveLength(1);
+  });
+});
+
+describe("rerouteProposals", () => {
+  /** A proposal queued under the old policy: written as routeCandidates wrote it, with that reason. */
+  function queuedUnder(reason: string, over: Record<string, unknown> = {}): { candidate: number; proposal: string } {
+    const id = candidate({ origin: "ai_suggested" });
+    routeCandidates(db, vault, NOW);
+    const p = proposals().find((x) => x.claim_id === cand(id).claim_id)!;
+    const claim = { ...JSON.parse(p.claim_json!), ...over };
+    db.prepare("UPDATE proposals SET claim_json = ?, reason = ? WHERE id = ?").run(JSON.stringify(claim), reason, p.id);
+    return { candidate: id, proposal: p.id! };
+  }
+  const prop = (id: string) => db.prepare("SELECT * FROM proposals WHERE id = ?").get(id) as Record<string, string | null>;
+
+  it("auto-accepts what the current routing accepts, leaves the inbox, and counts no review decision", () => {
+    const d = queuedUnder("decision", { kind: "decision", origin: "user_stated" });
+    const m = queuedUnder("origin:imported_memory", { origin: "imported_memory" });
+    const r = rerouteProposals(db, vault, addDays(NOW, 1));
+    expect(r.accepted).toBe(2);
+    for (const x of [d, m]) {
+      expect(prop(x.proposal)).toMatchObject({ state: "accepted", decided_at: "2026-10-27T10:00:00Z", decision_ms: null });
+      expect(cand(x.candidate).state).toBe("accepted");
+      expect(claimRow(db, cand(x.candidate).claim_id!)).toMatchObject({ status: "active", review: "auto_accepted" });
+    }
+    expect(vault.readAll().entries).toHaveLength(2);
+  });
+
+  it("leaves real risks open: Claude's, sensitive, similar", () => {
+    const ai = queuedUnder("origin:ai_suggested");
+    const sens = queuedUnder("decision", { kind: "decision", origin: "user_stated", sensitivity: "sensitive" });
+    const sim = queuedUnder("similar:clm_A", { origin: "user_stated" });
+    db.prepare("UPDATE proposals SET similar_to = 'clm_A' WHERE id = ?").run(sim.proposal);
+    expect(rerouteProposals(db, vault, NOW)).toEqual({ accepted: 0, audits: 0 });
+    for (const x of [ai, sens, sim]) expect(prop(x.proposal).state).toBe("open");
+    expect([prop(ai.proposal).reason, prop(sens.proposal).reason, prop(sim.proposal).reason]).toEqual(["origin:ai_suggested", "sensitive", "similar:clm_A"]);
+    expect(vault.readAll().entries).toEqual([]);
+  });
+
+  it("is idempotent", () => {
+    queuedUnder("decision", { kind: "decision", origin: "user_stated" });
+    expect(rerouteProposals(db, vault, NOW).accepted).toBe(1);
+    expect(rerouteProposals(db, vault, NOW).accepted).toBe(0);
   });
 });
 
