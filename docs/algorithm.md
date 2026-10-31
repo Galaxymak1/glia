@@ -1,6 +1,6 @@
 # How glia works
 
-A living description of the algorithm, updated by every work package that changes it. `SPEC.md` says what glia should do; this file says what the code does today. Last updated after 0.1.2, when the claims layer was removed (search only).
+A living description of the algorithm, updated by every work package that changes it. `SPEC.md` says what glia should do; this file says what the code does today. Last updated at 0.2.0, when the claims layer was removed (search only).
 
 ## Pipeline
 
@@ -230,6 +230,6 @@ When the embedder cannot be reached, search returns the keyword results and says
 | WP18 recall and brief | #41 | `recall` and `brief` over MCP; `enrich@2` flags `<brain-claims>` as injected, and served claims are stripped from extraction input. |
 | WP19 audit | #42 | Schema v11 (arm C). Precision audit of 50 auto-accepted claims; arm C (claims only) in `brain eval`. |
 | Packaging | 0.1.0 | Renamed glia (`<glia-claims>`, paths, commands). Schema v12 (`jobs.run_key`). `glia daemon` on Paris time with child-process jobs, at login on Linux, macOS and Windows; project scopes; the SessionStart hook; BGE-M3 in-process by default, Ollama as fallback; `glia init` and `glia doctor`; npm package and Claude Code plugin. |
-| 0.1.2 | this release | Paths with either separator are scrubbed, opted out and pruned (Windows); the plugin installs glia in its data folder; `init --dry-run` lists the projects. |
-| Robustness | this branch | Projects excluded after ingest are hidden (`sources.excluded`); `init --exclude` on a later run adds to the config; failed daemon jobs back off (15 min, doubling, at most 4 h); extraction scopes a project by its folder's git remote, as the hook does; doctor checks git once claims are on. |
-| Search only | this branch | The claims layer is removed: extraction, validation, dedup, routing, review, audit, the vault, `recall`, `brief` and the SessionStart briefing, and with them the API key and git. Arm C scored 15/50 against 43/50 for raw search. The schema is unchanged; the claim tables stay unused. The code is in the `claims-layer-final` tag. |
+| 0.1.2 | 0.1.2 | Paths with either separator are scrubbed, opted out and pruned (Windows); the plugin installs glia in its data folder; `init --dry-run` lists the projects. |
+| Robustness | #49 | Projects excluded after ingest are hidden (`sources.excluded`); `init --exclude` on a later run adds to the config; failed daemon jobs back off (15 min, doubling, at most 4 h); extraction scopes a project by its folder's git remote, as the hook does; doctor checks git once claims are on. |
+| Search only | 0.2.0 | The claims layer is removed: extraction, validation, dedup, routing, review, audit, the vault, `recall`, `brief` and the SessionStart briefing, and with them the API key and git. Arm C scored 15/50 against 43/50 for raw search. The schema is unchanged; the claim tables stay unused. The code is in the `claims-layer-final` tag. |
