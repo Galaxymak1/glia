@@ -34,8 +34,8 @@ const PROJECT_OF = new RegExp(String.raw`(?:^|/)([^/]+)/(?:${UUID}\.jsonl|${UUID
 /**
  * Brings `sources.excluded` in line with the config, for sources stored before their project was
  * excluded: a Claude Code source is out when any path its copy was read from sits in an excluded
- * project, and back in when the pattern is removed. Search, the meaning index, MCP and extraction
- * all leave excluded sources out; their rows and raw copies stay, so the change can be undone.
+ * project, and back in when the pattern is removed. Search, the meaning index and MCP all leave
+ * excluded sources out; their rows and raw copies stay, so the change can be undone.
  */
 export function applyExclusions(db: Database.Database, config: Config): { excluded: number; restored: number } {
   const rows = db

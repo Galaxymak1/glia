@@ -15,6 +15,6 @@ In the steps below, `glia` means this exact command, which runs the glia install
 4. Ask the user which projects glia must never store (client or employer work). None is a fine answer.
 5. Run `glia init --yes` with one `--exclude <project folder name>` for each project the user named. If the user wants no background service, add `--no-service`.
 6. Run `glia doctor` and tell the user the result in a few lines: what works, what is off and the fix glia printed for it. Keyword search works at once; the meaning search is built in the background and `glia doctor` shows its progress.
-7. Finish by suggesting `/glia:recall <a topic>` and `/glia:search <words>`.
+7. Finish by suggesting `/glia:search <words>`.
 
 Never edit the user's Claude settings yourself: `glia init` does it, and says so.

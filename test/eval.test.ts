@@ -147,49 +147,18 @@ describe("runEval and the gate", () => {
     expect(r.hit8).toEqual({ correct: 0, total: 1 });
   });
 
-  describe("arm C, claims", () => {
-    // Arm C answers "right" except for q1; it sees recall and brief only.
-    const seen: string[][] = [];
-    const withC: ClaudeRunner = async (args, o) => {
-      if (args.includes("stream-json") && args.join(" ").includes("mcp__glia__recall")) {
-        seen.push(args);
-        const prompt = args[args.indexOf("-p") + 1]!;
-        return stream([], prompt.includes("question q1") ? "wrong" : "right");
-      }
-      return runner(args, o);
-    };
-    const runArms = (arms: ("B" | "C")[]) =>
-      runEval(db, { questions, questionsSha256: "sha", armA: new Map(), model: "m", judgeModel: "j", mcpCommand: ["node", "cli.js", "mcp"], arms }, withC);
-
-    it("arm C runs with recall and brief only", async () => {
-      seen.length = 0;
-      await runArms(["B", "C"]);
-      expect(seen).toHaveLength(5);
-      for (const a of seen) {
-        expect(a[a.indexOf("--allowedTools") + 1]).toBe("mcp__glia__recall mcp__glia__brief");
-        expect(a).toEqual(expect.arrayContaining(["--tools", "", "--strict-mcp-config", "--no-session-persistence"]));
-        expect(a[a.indexOf("-p") + 1]).toContain("recall and brief");
-      }
-    });
-
-    it("without arms, runs arm B only", async () => {
-      seen.length = 0;
-      const id = await run({});
-      expect(seen).toHaveLength(0);
-      expect(evalReport(db, id).armC).toEqual({ correct: 0, total: 0 });
-    });
-
-    it("the report compares arms B and C per category", async () => {
-      const id = await runArms(["B", "C"]);
-      const r = evalReport(db, id);
-      expect(r.armC).toEqual({ correct: 4, total: 5 });
-      expect(r.byCategory.temporal!.C).toEqual({ correct: 1, total: 2 });
-      expect(r.rows.filter((x) => x.arm === "C").every((x) => x.hit_at_8 === null)).toBe(true);
-      const text = formatEvalReport(r, false);
-      expect(text).toMatch(/category\s+arm B\s+arm C\s+arm A/);
-      expect(text).toMatch(/temporal\s+2\/2 \(100%\)\s+1\/2 \(50%\)/);
-      verifyVerdict(db, id, "q1", "C", "correct");
-      expect(evalReport(db, id).armC).toEqual({ correct: 5, total: 5 });
-    });
+  it("a run stored with arm C rows, from before the claims layer went, still reports them", async () => {
+    const id = await run({});
+    expect(evalReport(db, id).armC).toEqual({ correct: 0, total: 0 });
+    db.prepare(
+      `INSERT INTO eval_results (run_id, question_id, arm, category, location, question, reference, answer, verdict, reason, hit_at_8, searches, seconds)
+       SELECT run_id, question_id, 'C', category, location, question, reference, answer, CASE WHEN question_id = 'q1' THEN 'incorrect' ELSE 'correct' END, reason, NULL, NULL, seconds
+       FROM eval_results WHERE run_id = ? AND arm = 'B'`,
+    ).run(id);
+    const r = evalReport(db, id);
+    expect(r.armC).toEqual({ correct: 4, total: 5 });
+    expect(formatEvalReport(r, false)).toMatch(/category\s+arm B\s+arm C\s+arm A/);
+    verifyVerdict(db, id, "q1", "C", "correct");
+    expect(evalReport(db, id).armC).toEqual({ correct: 5, total: 5 });
   });
 });

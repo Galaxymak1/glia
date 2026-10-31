@@ -34,12 +34,11 @@ describe("package", () => {
 
   it("the plugin starts glia through bin-check, with the CLAUDE_PLUGIN_ROOT variable", () => {
     expect(readJson("plugin/.mcp.json")).toEqual({ mcpServers: { glia: { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/bin-check.mjs", "mcp"] } } });
-    const hooks = readJson("plugin/hooks/hooks.json");
-    expect(hooks.hooks.SessionStart[0].hooks[0]).toMatchObject({ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/bin-check.mjs" hook session-start' });
+    expect(existsSync("plugin/hooks")).toBe(false);
   });
 
   it("every skill has a name and a description", () => {
-    for (const name of ["setup", "recall", "search", "status"]) {
+    for (const name of ["setup", "search", "status"]) {
       const text = readFileSync(`plugin/skills/${name}/SKILL.md`, "utf8");
       expect(text).toMatch(new RegExp(`^---\\nname: ${name}\\ndescription: .+\\n(?:[a-z-]+: .+\\n)*---\\n`));
     }
@@ -59,13 +58,7 @@ describe("plugin/bin-check.mjs", () => {
     chmodSync(join(dir, "glia"), 0o755);
   };
 
-  it("missing glia points to setup", () => {
-    const r = run(["hook", "session-start"], { PATH: "/nonexistent", HOME: "/nonexistent" });
-    expect(r.status).toBe(0);
-    expect(JSON.parse(r.stdout).hookSpecificOutput).toMatchObject({ hookEventName: "SessionStart", additionalContext: expect.stringMatching(/\/glia:setup/) });
-  });
-
-  it("missing glia fails the MCP server with the same hint", () => {
+  it("missing glia fails the MCP server with a hint pointing to setup", () => {
     const r = run(["mcp"], { PATH: "/nonexistent", HOME: "/nonexistent" });
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/glia is not installed yet: run \/glia:setup \(or npm i -g @galaxymak1\/glia && glia init\)/);
@@ -74,9 +67,9 @@ describe("plugin/bin-check.mjs", () => {
   it("runs the glia on PATH with the arguments and the standard input", () => {
     const bin = tmpDir("glia-bin-");
     stub(bin, 'process.stdout.write(`args:${process.argv.slice(2).join(" ")}\\n`);\nprocess.stdin.pipe(process.stdout);\n');
-    const r = run(["hook", "session-start"], { ...system, PATH: `${bin}${delimiter}${systemPath}`, HOME: "/nonexistent" }, "stdin-text");
+    const r = run(["search", "postgres"], { ...system, PATH: `${bin}${delimiter}${systemPath}`, HOME: "/nonexistent" }, "stdin-text");
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe("args:hook session-start\nstdin-text");
+    expect(r.stdout).toBe("args:search postgres\nstdin-text");
   });
 
   it("finds glia under the npm global prefix when PATH lacks it", () => {

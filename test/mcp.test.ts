@@ -72,8 +72,6 @@ describe("tools/list", () => {
     expect(tools.map((t) => [t.name, t.annotations?.readOnlyHint])).toEqual([
       ["search_evidence", true],
       ["open_evidence", true],
-      ["recall", true],
-      ["brief", true],
     ]);
   });
 });

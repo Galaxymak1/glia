@@ -1,16 +1,12 @@
-// The local stdio MCP server (#8, #41, SPEC.md "MCP tools"): `search_evidence` and `open_evidence`
-// over the evidence layer, `recall` and `brief` over claims. Read-only; every result stays well
-// under 25k tokens.
+// The local stdio MCP server (#8, SPEC.md "MCP tools"): `search_evidence` and `open_evidence`
+// over the evidence layer. Read-only; every result stays well under 25k tokens.
 
 import { readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import type { Embedder } from "./embed.js";
-import { brief, CLAIMS_TAG, logRetrievals, MAX_RECALL_LIMIT, recall, type ClaimHit } from "./recall.js";
 import { search } from "./search.js";
-import { syncClaimRows } from "./claimIndex.js";
-import type { Vault } from "./vault.js";
 import { indexStatus } from "./vectors.js";
 
 export const SOURCE_KINDS = ["cc", "cai", "cap", "cad", "caa", "mem"] as const;
@@ -41,34 +37,6 @@ interface TurnRow {
   ts: string | null;
   text: string;
   is_injected: number;
-}
-
-/** A recalled statement is cut here: 20 of them stay under RESULT_CHARS. */
-const STATEMENT_CHARS = 2_000;
-/** Evidence entries listed per claim; a fact merged from many sessions says how many more it has. */
-const EVIDENCE_SHOWN = 5;
-const scopeSchema = z.string().regex(/^(global|project:.+|context:.+)$/, "global, project:<slug> or context:<tag>");
-
-/** The claims as text, as many as fit under RESULT_CHARS; returns the ids actually served. */
-function formatHits(hits: ClaimHit[], notes: string[]): { text: string; served: string[] } {
-  const lines: string[] = [];
-  const served: string[] = [];
-  let size = SOURCE_HEADER_CHARS;
-  for (const [i, h] of hits.entries()) {
-    const validity = [`as of ${h.as_of}`, h.valid_to && `valid to ${h.valid_to}`, h.status !== "active" && h.status].filter(Boolean).join(" · ");
-    const shown = h.evidence.slice(0, EVIDENCE_SHOWN).map((e) => (e.turn_id === null ? e.source : `turn ${e.turn_id} (${cut(e.source, 120).text})`));
-    if (h.evidence.length > EVIDENCE_SHOWN) shown.push(`(+${h.evidence.length - EVIDENCE_SHOWN} more)`);
-    const line = `${i + 1}. ${h.id} · ${h.kind} · ${h.scope} · ${h.origin} · ${validity}\n   ${cut(h.statement.replace(/\s+/g, " "), STATEMENT_CHARS).text}\n   evidence: ${shown.join(", ")}`;
-    if (size + line.length + 1 > RESULT_CHARS) {
-      notes.push(`${hits.length - i} more claims left out to stay under the size cap`);
-      break;
-    }
-    lines.push(line);
-    served.push(h.id);
-    size += line.length + 1;
-  }
-  const body = [lines.length ? lines.join("\n") : "No claims match.", ...notes.map((n) => `Note: ${n}`)].join("\n\n");
-  return { text: `<${CLAIMS_TAG}>\n${body}\n</${CLAIMS_TAG}>`, served };
 }
 
 const cut = (text: string, max: number) => (text.length > max ? { text: `${text.slice(0, max)}…`, truncated: true } : { text, truncated: false });
@@ -151,15 +119,10 @@ export function formatOpen(r: NonNullable<ReturnType<typeof openEvidence>>): str
   return `${head}\n\n${turns.join("\n\n")}${tail}`;
 }
 
-/**
- * With a vault, every recall and brief first brings the claim rows in line with its files, so a
- * claim retracted or corrected in Obsidian is served as it now reads (statements edited since are
- * found by keyword until the next `glia index --claims` embeds them).
- */
 /** The package version, as the server reports it to clients (src/ and dist/ both sit next to package.json). */
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
-export function createMcpServer(db: Database.Database, embedder: Embedder | null, vault?: Vault): McpServer {
+export function createMcpServer(db: Database.Database, embedder: Embedder | null): McpServer {
   const server = new McpServer({ name: "glia", version: VERSION }, { capabilities: { tools: {} } });
 
   server.registerTool(
@@ -215,58 +178,6 @@ export function createMcpServer(db: Database.Database, embedder: Embedder | null
       const r = openEvidence(db, id, window);
       if (!r) return { content: [{ type: "text", text: `No turn ${id}.` }], isError: true };
       return { content: [{ type: "text", text: formatOpen(r) }] };
-    },
-  );
-
-  // Every served claim is logged with the client that asked, so it is known when it comes back.
-  const client = () => server.server.getClientVersion()?.name ?? "unknown";
-
-  server.registerTool(
-    "recall",
-    {
-      title: "Recall claims",
-      description:
-        "Hybrid search over the user's reviewed claims: facts, preferences, decisions and lessons drawn from their conversations, " +
-        "each with its origin (did the user say it, or did Claude suggest it), its scope and when it became true. Superseded " +
-        "claims are hidden unless include_superseded is set, or as_of asks what was true at a past date. Evidence ids open " +
-        "with open_evidence.",
-      inputSchema: z.object({
-        query: z.string().min(1).describe("What to look for, in any language"),
-        scope: scopeSchema.optional().describe("Only claims of this scope (and global ones): project:<slug>, context:<tag> or global"),
-        as_of: isoDate.optional().describe("Only claims valid at this date (ISO): what was true then, superseded claims included"),
-        include_superseded: z.boolean().default(false).describe("Also return claims a later claim superseded"),
-        limit: z.number().int().min(1).max(MAX_RECALL_LIMIT).default(8).describe("Number of claims"),
-      }),
-      annotations: { readOnlyHint: true, openWorldHint: false },
-    },
-    async (args) => {
-      if (vault) syncClaimRows(db, vault);
-      const r = await recall(db, embedder, args);
-      const notes = r.meaningError ? [`meaning search unavailable (${r.meaningError}); keyword results only`] : [];
-      const out = formatHits(r.hits, notes);
-      logRetrievals(db, out.served, client());
-      return { content: [{ type: "text", text: out.text }] };
-    },
-  );
-
-  server.registerTool(
-    "brief",
-    {
-      title: "Brief",
-      description:
-        "A compact briefing on the user: their profile and preferences, open decisions, and the active facts of one project, " +
-        "newest first, each with the date it holds from (as of). Call it at the start of a task about a project.",
-      inputSchema: z.object({
-        scope: scopeSchema.optional().describe("The project or context to brief on, e.g. project:ai-brain"),
-        budget_tokens: z.number().int().min(200).max(4000).default(1500).describe("Size of the briefing"),
-      }),
-      annotations: { readOnlyHint: true, openWorldHint: false },
-    },
-    async (args) => {
-      if (vault) syncClaimRows(db, vault);
-      const r = brief(db, args);
-      logRetrievals(db, r.claimIds, client());
-      return { content: [{ type: "text", text: r.text }] };
     },
   );
 

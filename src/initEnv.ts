@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, st
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { anthropicApiKey, loadConfig } from "./config.js";
+import { loadConfig } from "./config.js";
 import { spawnJob } from "./daemon.js";
 import { openDb } from "./db.js";
 import { downloadModel, loadLlamaModule, modelPathFor } from "./embedLlama.js";
@@ -89,14 +89,6 @@ export function realInitEnv(dbPath: string, configPath: string): InitEnv {
       download: async (onProgress) => {
         await downloadModel(dirname(dbPath), onProgress);
       },
-    },
-    hasApiKey: () => {
-      try {
-        anthropicApiKey();
-        return true;
-      } catch {
-        return false;
-      }
     },
     service: {
       platform,

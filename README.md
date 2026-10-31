@@ -13,7 +13,6 @@ Your history lives on your machine, in one folder you own.
 - **Zero effort.** Install it once. It reads your Claude Code sessions in the background and keeps itself up to date. You never "save" anything.
 - **Claude is the interface.** Ask Claude what you decided about the database, which approach you rejected, how you like your answers. It looks it up in your history and answers, with the date and the source.
 - **Search that finds what you meant.** Keywords and meaning together, in French and English, over every Claude Code session and every claude.ai export at once.
-- **Facts you can trust.** Beyond raw search, glia can distil your history into short, dated, sourced statements that you review with a single key. Anything Claude only suggested stays marked as a suggestion, and a newer decision replaces the older one without erasing it.
 - **Private by design.** Secrets are scrubbed before anything is stored. Projects you exclude are never read. Put `#nobrain` on a line of its own in any session and that session is never kept.
 - **Works where you work.** Claude Code and Claude Desktop out of the box, and any other MCP client (Zed, Cursor and more) with a three-line snippet.
 
@@ -42,7 +41,7 @@ glia init
 glia search "which database did I pick"
 ```
 
-Meaning search finishes building in the background, and `glia doctor` shows how far along it is and the fix for anything that's off. `glia observe` puts the whole brain on one screen: what is ingested and indexed, extraction, claims, what waits in the review inbox and why, the audit, the daemon's jobs and the last evaluation. Add an Anthropic API key to `~/.config/glia/env` and glia also distils your conversations into reviewable facts overnight; that is the one step that sends text to Anthropic, and it stays off until you add a key. More options, other clients and troubleshooting are in [docs/install.md](docs/install.md).
+Meaning search finishes building in the background, and `glia doctor` shows how far along it is and the fix for anything that's off. `glia observe` shows everything on one screen: what is ingested and indexed, the background jobs and the last evaluation. Nothing leaves your machine. More options, other clients and troubleshooting are in [docs/install.md](docs/install.md).
 
 ## Bring in your history
 
@@ -57,21 +56,19 @@ It's safe to run again: what was already read is skipped.
 
 ## What Claude gets
 
-glia gives Claude four read-only tools:
+glia gives Claude two read-only tools:
 
 | Tool | What it does |
 | --- | --- |
-| `recall` | The reviewed facts about a topic, with dates and sources |
-| `brief` | A short briefing on a project, loaded at the start of a session |
 | `search_evidence` | Search the raw conversations |
 | `open_evidence` | Read around any result |
 
-In Claude Code the plugin also adds `/glia:recall`, `/glia:search`, `/glia:status` and `/glia:setup`. Details are in [docs/mcp.md](docs/mcp.md).
+In Claude Code the plugin also adds `/glia:search`, `/glia:status` and `/glia:setup`. Details are in [docs/mcp.md](docs/mcp.md).
 
 ## You stay in charge
 
 - **Local.** One database, one folder, one machine.
-- **Honest.** glia measures itself against your own questions, so every layer has to beat plain search before it earns its place ([docs/eval.md](docs/eval.md)).
+- **Honest.** glia measures itself against your own questions, so a layer stays only if it answers better than what Claude already has ([docs/eval.md](docs/eval.md)).
 - **Reversible.** Exclude a project, opt a session out, or delete the folder. That's all it takes.
 
 ## License

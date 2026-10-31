@@ -84,11 +84,6 @@ if (args[0] === "install") {
 
 const glia = find(data);
 if (!glia) {
-  if (args[0] === "hook") {
-    // A session must still start: say it in the context instead of failing.
-    process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: HINT } })}\n`);
-    process.exit(0);
-  }
   process.stderr.write(`${HINT}\n`);
   process.exit(1);
 }
