@@ -40,6 +40,11 @@ describe("observe", () => {
     expect(o.failedDay).toBe(1);
   });
 
+  it("leaves out job types that have not run for 7 days", () => {
+    db.prepare("INSERT INTO jobs (type, state, started_at, finished_at) VALUES ('extract_submit', 'done', '2026-10-20T01:00:00Z', '2026-10-20T01:01:00Z'), ('sweep', 'done', '2026-10-28T10:00:00Z', '2026-10-28T10:01:00Z')").run();
+    expect(observe(db, "/x/glia.db", MODEL, NOW).jobs.map((j) => j.type)).toEqual(["sweep"]);
+  });
+
   it("shows the latest run of arm B, not a later run without it", () => {
     db.prepare("INSERT INTO eval_runs (id, started_at, questions_sha256, questions, model, judge_model) VALUES (1, '2026-10-27T10:00:00Z', 'x', 1, 'm', 'j'), (2, '2026-10-28T10:00:00Z', 'x', 1, 'm', 'j')").run();
     const row = "INSERT INTO eval_results (run_id, question_id, arm, category, location, question, reference, answer, verdict) VALUES (?, 'q1', ?, 'temporal', 'cc', 'q', 'r', 'a', 'correct')";
@@ -56,6 +61,11 @@ describe("formatObserve", () => {
     expect(out).toContain("sources       2  (cai 1, cc 1); 1 excluded");
     expect(out).toContain("behind (run: glia index)");
     expect(out).not.toMatch(/\x1b\[/);
+  });
+
+  it("keeps a space between a long label and its value", () => {
+    db.prepare("INSERT INTO jobs (type, state, started_at, finished_at) VALUES ('a_very_long_job', 'done', '2026-10-28T10:00:00Z', '2026-10-28T10:01:00Z')").run();
+    expect(formatObserve(observe(db, "/x/glia.db", MODEL, NOW), { color: false })).toContain("a_very_long_job done");
   });
 
   it("colors only when asked", () => {

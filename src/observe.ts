@@ -56,12 +56,14 @@ export function observe(db: Database.Database, dbPath: string, model: string, no
       missingTurns: idx.missing,
       otherModel: idx.otherModel,
     },
+    // The latest run of each job that ran in the last 7 days: a job type the daemon no longer
+    // runs (extraction, before 0.2.0) drops out.
     jobs: db
       .prepare(
         `SELECT j.type, j.state, coalesce(j.finished_at, j.started_at) AS at FROM jobs j
-         WHERE j.id = (SELECT max(id) FROM jobs k WHERE k.type = j.type) ORDER BY j.type`,
+         WHERE j.id = (SELECT max(id) FROM jobs k WHERE k.type = j.type) AND coalesce(j.finished_at, j.started_at) >= ? ORDER BY j.type`,
       )
-      .all() as Observation["jobs"],
+      .all(isoSeconds(new Date(now.getTime() - 7 * DAY_MS))) as Observation["jobs"],
     failedDay: one(db, "SELECT count(*) AS n FROM jobs WHERE state = 'failed' AND finished_at >= ?", isoSeconds(new Date(now.getTime() - DAY_MS))).n as number,
     eval: ev,
   };
@@ -89,7 +91,7 @@ export function formatObserve(o: Observation, opts: { color: boolean }): string 
   const bad = (s: string) => paint("red", s);
   const n = (v: number) => v.toLocaleString("en-US");
   const list = (c: Counts) => Object.entries(c).map(([k, v]) => `${k} ${n(v)}`).join(", ") || "none";
-  const row = (label: string, value: string) => `  ${label.padEnd(14)}${value}`;
+  const row = (label: string, value: string) => `  ${label.padEnd(13)} ${value}`;
 
   const e = o.evidence;
   const total = Object.values(e.sources).reduce((s, v) => s + v, 0);
