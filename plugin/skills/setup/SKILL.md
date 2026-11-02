@@ -5,7 +5,7 @@ description: Install and set up glia, the memory for Claude, on this machine. Us
 
 # Set up glia
 
-glia keeps what matters from the user's Claude conversations and brings it back in later sessions. The plugin only connects Claude to the `glia` command; this skill installs that command and sets it up.
+glia keeps the user's whole Claude history and lets Claude search it in later sessions. The plugin only connects Claude to the `glia` command; this skill installs that command and sets it up.
 
 In the steps below, `glia` means this exact command, which runs the glia installed on PATH or the one the plugin installed: `node "${CLAUDE_PLUGIN_ROOT}/bin-check.mjs" --data "${CLAUDE_PLUGIN_DATA}"`. Run it as written, followed by glia's arguments.
 
