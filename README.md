@@ -4,7 +4,7 @@
 
 **Claude that remembers.**
 
-You decide something with Claude on Monday. On Friday, in a new session, it has no idea. glia fixes that. It quietly keeps what matters from your conversations and puts it back in front of Claude when it's needed, so you stop repeating yourself and start building on what you already worked out.
+You decide something with Claude on Monday. On Friday, in a new session, it has no idea. glia fixes that. It keeps your whole Claude history, every Claude Code session and every claude.ai export, and lets Claude search it when you ask about something you worked out before. Claude finds the conversation and answers from what was actually said, so you stop repeating yourself and start building on what you already decided.
 
 Your history lives on your machine, in one folder you own.
 

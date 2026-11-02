@@ -6,7 +6,7 @@
     {
       "name": "glia",
       "source": "./plugin",
-      "description": "Memory for Claude: remembers your conversations and brings back what matters"
+      "description": "Memory for Claude: keeps your whole Claude history and lets Claude search it"
     }
   ]
 }
