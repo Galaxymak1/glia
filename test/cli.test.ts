@@ -8,8 +8,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { migrations } from "../src/migrations.js";
-import { Vault } from "../src/vault.js";
-import { claimFixture } from "./helpers.js";
 
 const V = migrations.at(-1)!.version;
 
@@ -238,80 +236,3 @@ describe("glia ingest of Claude Code projects", () => {
 });
 
 
-describe("glia index --claims", () => {
-  it("mirrors the vault into the claim tables and reports a broken file", () => {
-    const db = join(dir, "claims", "brain.db");
-    const vault = new Vault(join(dir, "claims", "vault"));
-    vault.writeClaim(claimFixture({ id: "clm_A" }), "a");
-    vault.writeClaim(claimFixture({ id: "clm_B" }), "b");
-    writeFileSync(join(dir, "claims", "vault", "claims", "2026", "clm_C.md"), "broken");
-    // A closed port: the embedder fails at once, and the rows are still indexed.
-    const config = join(dir, "claims-config.json");
-    writeFileSync(config, JSON.stringify({ embedding: { url: "http://127.0.0.1:9" } }));
-    let out = "";
-    try {
-      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "index", "--claims", "--db", db], { encoding: "utf8", env: { ...env, GLIA_CONFIG: config }, stdio: "pipe" });
-    } catch (err) {
-      const e = err as { status: number; stdout: string; stderr: string };
-      expect(e.status).toBe(1);
-      out = e.stdout + e.stderr;
-    }
-    expect(out).toContain("Claims: 2 new, 0 updated, 0 removed, 0 embedded");
-    expect(out).toMatch(/glia: claims\/2026\/clm_C\.md: no frontmatter/);
-    expect(out).toMatch(/glia: meaning index of claims not updated/);
-  });
-});
-
-describe("glia extract", () => {
-  it("--dry-run reports what would be sent without calling the API", async () => {
-    const dbPath = join(dir, "extract", "brain.db");
-    const { openDb } = await import("../src/db.js");
-    const { migrate } = await import("../src/migrations.js");
-    const { writeSource } = await import("../src/sources.js");
-    const db = openDb(dbPath);
-    migrate(db);
-    writeSource(
-      db,
-      { kind: "cc", external_id: "s1", title: "t", project_hint: null, cwd: null, created_at: null, updated_at: "2026-10-10T00:00:00Z", raw_path: "raw", raw_sha256: "abc", parser_version: "test" },
-      [{ externalUuid: "u1", parentUuid: null, role: "user", ts: "2026-10-01T09:00:00Z", text: "x".repeat(2250), isSidechain: false, isInjected: false }],
-    );
-    db.close();
-    // No env file: a dry run needs no key.
-    const out = execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "extract", "--dry-run", "--db", dbPath], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "no-xdg") } });
-    expect(out).toBe("Would send 1 sources in 1 requests: 2250 characters, about 1000 tokens, about $0.0001 batched for input\n");
-  });
-
-  it("without a key, says where to put one", () => {
-    const dbPath = join(dir, "extract", "brain.db");
-    expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "extract", "--db", dbPath], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "no-xdg") }, stdio: "pipe" })).toThrow(/glia[\\/]env: no ANTHROPIC_API_KEY/);
-  });
-});
-
-describe("glia review", () => {
-  it("--stats with no decisions says so", () => {
-    expect(brain("review", "--stats", "--db", join(dir, "review", "brain.db"))).toBe("No review decisions yet.\n");
-  });
-
-  it("needs a terminal to triage", () => {
-    expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "review", "--db", join(dir, "review", "brain.db")], { encoding: "utf8", env, stdio: "pipe" })).toThrow(
-      /glia review needs a terminal/,
-    );
-  });
-});
-
-describe("glia audit and eval arms", () => {
-  it("audit report on a fresh brain leaves the gate undecided", () => {
-    const db = join(dir, "audit", "brain.db");
-    expect(brain("audit", "sample", "--db", db)).toBe("Opened 0 audit items; triage them with: glia review --audit\n");
-    expect(brain("audit", "report", "--db", db)).toBe(
-      "Write precision: 0/0 (-); 0 edited, 0 retracted; 0 still open\nAI-origin claims auto-accepted: 0\n" +
-        "Phase 1 gate (precision 80% or more, zero AI-origin auto-accepted): not decided (nothing judged yet)\n",
-    );
-  });
-
-  it("eval run rejects an unknown arm", () => {
-    expect(() => execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "eval", "run", "--arms", "B,X", "--db", join(dir, "audit", "brain.db")], { encoding: "utf8", env, stdio: "pipe" })).toThrow(
-      /--arms takes B, C or both/,
-    );
-  });
-});

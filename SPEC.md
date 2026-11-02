@@ -2,6 +2,8 @@
 
 2026-10-20 · @Kylian · The project was named AI Second Brain (`ai_second_brain`, command `brain`) until 2026-10-27, when it became glia (command `glia`, npm `@galaxymak1/glia`).
 
+> **Status, 2026-10-31: search only.** glia ships the evidence layer: ingest, scrubbing, hybrid search and the `search_evidence` and `open_evidence` tools. The claims layer this spec describes (sections "Data model" for claims, "Extraction and consolidation", "Review inbox", `recall`, `brief` and `record_decision` under "Serving", and baseline 4 under "Evaluation") was built, measured and removed: on the 50-question set, claims answered 15/50 against 43/50 for raw search. Those sections stay as the record of that design; its code is in the `claims-layer-final` tag.
+
 ## Overview
 
 The system is a personal, self-hosted evidence ledger. It keeps every Claude conversation as immutable evidence, derives a small set of reviewed, dated and attributed claims from it, and serves both back to any MCP client. Each install serves one user. The code is source-available under the Elastic License 2.0: anyone may run, read and change it, but not offer it to others as a hosted or managed service.

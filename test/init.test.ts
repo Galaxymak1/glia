@@ -93,7 +93,6 @@ function makeEnv(over: Partial<InitEnv> = {}): InitEnv {
       );
       db.close();
     },
-    hasApiKey: () => false,
     inProcess: { available: async () => false, modelPath: join(dataDir, "models/bge-m3-Q8_0.gguf"), download: async () => {} },
     service: {
       platform: "linux",
@@ -193,13 +192,6 @@ describe("runInit", () => {
     said = [];
     await runInit(env, yesIo(), { ...yesOpts, exclude: ["-home-me-work-*"] });
     expect(said.join("\n")).toMatch(/Nothing changed/);
-  });
-
-  it("with an API key, claims need git: the vault commits every claim with it", async () => {
-    const claims = async (over: Partial<InitEnv>) => (await checks(makeEnv(over))).find((c) => c.id === "claims")!;
-    expect(await claims({})).toMatchObject({ ok: true, detail: expect.stringMatching(/claims off/) });
-    expect(await claims({ hasApiKey: () => true, which: (c) => (c === "git" ? "/usr/bin/git" : null) })).toMatchObject({ ok: true, detail: expect.stringMatching(/claims on/) });
-    expect(await claims({ hasApiKey: () => true, which: () => null })).toMatchObject({ ok: false, fix: expect.stringMatching(/Install git/) });
   });
 
   it("--dry-run names the Claude Code projects found, so they can be excluded", async () => {

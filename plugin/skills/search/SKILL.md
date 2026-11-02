@@ -1,6 +1,6 @@
 ---
 name: search
-description: Search the raw text of the user's past Claude conversations with glia. Use when the user wants to find what was actually said, or recall found nothing.
+description: Search the raw text of the user's past Claude conversations with glia. Use when the user asks what they decided, said or did before, or wants to find what was actually said.
 argument-hint: "<words>"
 ---
 

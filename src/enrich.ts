@@ -9,8 +9,8 @@ export const ENRICH_VERSION = "enrich@2";
 
 /**
  * Tags the harness wraps around text it adds to a user-role message: reminders, background
- * task notices, the output and caveat of a local slash command, hook output, and the brain's own
- * recalled claims.
+ * task notices, the output and caveat of a local slash command, hook output, and the claims an
+ * older glia served back.
  */
 const INJECTED_TAGS = [
   "system-reminder",
@@ -21,8 +21,8 @@ const INJECTED_TAGS = [
   "user-prompt-submit-hook",
   "ide_opened_file",
   "ide_selection",
-  // What recall and brief return (src/recall.ts): claims served back must never be extracted again.
-  // brain-claims is the tag from before the rename to glia, still in transcripts on disk.
+  // What recall and brief returned before the claims layer was removed, still in transcripts on
+  // disk; brain-claims is the tag from before the rename to glia.
   "glia-claims",
   "brain-claims",
 ];

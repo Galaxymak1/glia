@@ -12,7 +12,7 @@ import { desktopConfigPath } from "./clients.js";
 import { applyExclusions } from "./sources.js";
 
 export interface Check {
-  id: "node" | "legacy" | "database" | "embeddings" | "config" | "clients" | "service" | "first-run" | "index" | "claims";
+  id: "node" | "legacy" | "database" | "embeddings" | "config" | "clients" | "service" | "first-run" | "index";
   ok: boolean;
   detail: string;
   fix?: string;
@@ -49,7 +49,6 @@ export interface InitEnv {
   openDb(): Database.Database;
   /** The first ingest of the given folders. */
   ingest(paths: string[]): Promise<void>;
-  hasApiKey(): boolean;
   /** BGE-M3 inside glia's own process, when node-llama-cpp can be loaded. */
   inProcess: { available(): Promise<boolean>; modelPath: string; download(onProgress: (done: number, total: number) => void): Promise<void> };
   service: ServiceDeps;
@@ -183,14 +182,6 @@ export async function checks(env: InitEnv): Promise<Check[]> {
       : { id: "first-run", ok: false, detail: "nothing ingested yet", fix: "Run: glia init" },
   );
   out.push({ id: "index", ok: true, detail: !inProcess && ollama !== "ready" ? "meaning index off (no Ollama)" : pendingIndex ? `meaning index: ${pendingIndex} turns still to embed (the daemon is building it)` : "meaning index: complete" });
-  // Every claim is committed to the vault with git (src/vault.ts): without it, extraction stops at the first one.
-  out.push(
-    !env.hasApiKey()
-      ? { id: "claims", ok: true, detail: "claims off (no ANTHROPIC_API_KEY in ~/.config/glia/env)" }
-      : env.which("git")
-        ? { id: "claims", ok: true, detail: "claims on: extracted every night at 02:00 (Europe/Paris)" }
-        : { id: "claims", ok: false, detail: "git is not installed, and the vault commits every claim with it", fix: "Install git (https://git-scm.com/downloads), then run: glia doctor" },
-  );
   return out;
 }
 
@@ -310,7 +301,7 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
       const db = env.openDb();
       try {
         const r = applyExclusions(db, env.loadConfig());
-        if (r.excluded) io.say(`${r.excluded} sources already stored from excluded projects are hidden from search and extraction`);
+        if (r.excluded) io.say(`${r.excluded} sources already stored from excluded projects are hidden from search`);
       } finally {
         db.close();
       }
@@ -342,7 +333,6 @@ export async function runInit(env: InitEnv, io: InitIo, opts: InitOptions): Prom
   else if (after.find((c) => c.id === "index")!.detail.includes("still to embed")) {
     io.say(opts.noService ? "Run: glia index to build meaning search (no daemon was installed)" : "Meaning search builds in the background; glia doctor shows progress.");
   }
-  if (!env.hasApiKey()) io.say("Claims are off until you add ANTHROPIC_API_KEY to ~/.config/glia/env");
   io.say(
     [
       "",

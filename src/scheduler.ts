@@ -1,7 +1,8 @@
 // The clock behind `glia daemon` (and later the server): jobs fall due on Europe/Paris time, and
 // every run is a row in `jobs`, so a key that already ran is never run twice.
 import type Database from "better-sqlite3";
-import { isoSeconds } from "./route.js";
+
+export const isoSeconds = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
 
 const PARIS = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Europe/Paris",

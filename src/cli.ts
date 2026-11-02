@@ -5,33 +5,22 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { defaultDbPath, openDb } from "./db.js";
-import { anthropicApiKey, type Config, defaultConfigPath, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
+import { type Config, defaultConfigPath, embeddingSettings, isExcludedPath, loadConfig } from "./config.js";
 import { search } from "./search.js";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createMcpServer } from "./mcp.js";
-import { evalReport, formatEvalReport, parseArmA, readQuestionsFile, runEval, type ToolArm, verifyVerdict } from "./eval.js";
+import { evalReport, formatEvalReport, parseArmA, readQuestionsFile, runEval, verifyVerdict } from "./eval.js";
 import { buildIndex, indexStatus } from "./vectors.js";
 import { EvidenceStore, rawDirFor, scrubPath } from "./evidence.js";
 import { pruneSuperseded, removeStaleTmp } from "./prune.js";
 import { isOptedOut, OPT_OUT_MARKER, OptOutCheck, optOut, sessionOf } from "./optOut.js";
 import { isSessionFileName, looksLikeProjectFolder, projectsView, type RootShape } from "./parsers/claudeCode.js";
 import { applyExclusions, indexClaudeCodeFile } from "./sources.js";
-import { gitRemoteOf } from "./projects.js";
 import { ingestExportZip, mayBeExportFile } from "./claudeAiExport.js";
 import { scrubText } from "./scrub.js";
 import { migrate, schemaVersion } from "./migrations.js";
-import { syncClaims } from "./claimIndex.js";
-import { anthropicBatchClient, planExtraction, pollExtraction, submitExtraction } from "./extractor.js";
-import { formatValidation, validateCandidates } from "./validate.js";
-import { dedupCandidates } from "./dedup.js";
 import { formatObserve, observe } from "./observe.js";
-import { expireProposals, rerouteProposals, routeCandidates } from "./route.js";
-import { reviewStats, runReview, type ReviewIo } from "./review.js";
-import { auditReport, formatAudit, sampleAudit } from "./audit.js";
-import { createInterface, emitKeypressEvents } from "node:readline";
-import { Vault, vaultDirFor } from "./vault.js";
 import { moveLegacyPaths } from "./legacy.js";
-import { sessionStartHook } from "./hooks.js";
 import { createEmbedder, LazyEmbedder } from "./embedLlama.js";
 import { checks, runInit } from "./init.js";
 import { initTerminalIo, realInitEnv } from "./initEnv.js";
@@ -47,8 +36,8 @@ Commands:
                                 Set glia up: database, embeddings, config, MCP clients, daemon, first ingest;
                                 safe to run again. --db-only just creates or migrates the database
   doctor                        Check the setup and print the fix for whatever is broken
-  observe                       One screen of the brain: evidence ingested, the meaning index,
-                                extraction, claims, the review inbox, the audit, jobs, the last eval
+  observe                       One screen of glia: evidence ingested, the meaning index, the daemon's
+                                jobs and the last evaluation
   scrub --dry-run [path...]     Report the secrets scrubbing would remove (default: ~/.claude/projects)
   ingest <path...>              Scrub and store raw files, then parse Claude Code transcripts and
                                 memory, and claude.ai export ZIPs, into sources and turns (idempotent).
@@ -57,31 +46,16 @@ Commands:
                                 copies of a transcript that a newer copy holds in full are pruned
   index [--rebuild]             Embed new and changed turns into the meaning index (Ollama); --rebuild
                                 deletes the index and embeds everything again
-  index --claims                Mirror the claim files of the vault into the claim tables and embed
-                                their statements; a file that does not parse is reported and skipped
-  extract [--from <date>]       Send every source whose turns changed since the last run to Claude Haiku 5.5
-                                (Batch API) for claim extraction; --dry-run reports the size and cost only.
-                                The key is read from ~/.config/glia/env (ANTHROPIC_API_KEY)
-  extract poll [--wait]         Read finished batches into candidate claims; --wait polls every minute
-                                until no batch is running
-  review [--audit]              Triage the review inbox one key at a time: a accept, e edit, m merge,
-                                r reject, s snooze 7 days, o open the evidence, q quit; --audit shows
-                                the claims picked for audit only
-  review --stats                Weekly rejection rate and median decision time
-  audit sample [--n 50]         Open audit items for auto-accepted claims never audited, for the
-                                write-precision audit; triage them with glia review --audit
-  audit report                  Write precision of the audit, AI-origin claims auto-accepted, the gate
   search <query...>             Hybrid keyword + meaning search over turns
-  daemon [--once]               Run the local jobs (sweep, index, extraction) on their own clock;
+  daemon [--once]               Run the local jobs (sweep, index) on their own clock;
                                 --once runs every due job once and exits
   daemon install | uninstall | status
                                 Start the daemon at login (systemd, launchd or a Windows task)
-  hook session-start            For Claude Code's SessionStart hook: reads the hook JSON on stdin,
-                                prints the briefing for the project it opens in
+  hook session-start            Prints nothing; kept so the SessionStart hook of an older plugin
+                                exits cleanly
   mcp                           Serve search_evidence and open_evidence to an MCP client over stdio
-  eval run [--arms B,C]         Answer every evaluation question with claude -p: arm B with the evidence
-                                tools (raw search), arm C with the claim tools (recall and brief); judge
-                                every arm and arm A against the references, store the run
+  eval run                      Answer every evaluation question with claude -p and the evidence tools
+                                (arm B, raw search); judge it and arm A against the references, store the run
   eval report [run]             Scores per category, retrieval hit@8 and the gate (latest run by
                                 default); --details lists every answer and verdict
   eval verify <run> <q> <A|B|C> <correct|incorrect>
@@ -97,7 +71,6 @@ Options:
   --arm-a <path>       With eval run: arm A answers (default: eval/arm-a.jsonl next to the database)
   --model <name>       With eval run: arm B model (default sonnet); --judge-model <name> (default sonnet)
   --only <ids>         With eval run: only these question ids, comma-separated
-  --arms <list>        With eval run: the tool arms to run (default B,C)
 
 Config: $GLIA_CONFIG, else ~/.config/glia/config.json
   {"claudeCode": {"exclude": ["-home-me-work-*"]}}   project folders never stored or parsed
@@ -257,7 +230,7 @@ function ingest(dbPath: string, paths: string[], config: Config): number {
       }
     }
     const prune = pruneSuperseded(db, store);
-    // Projects excluded since their sessions were stored: hidden from search, MCP and extraction.
+    // Projects excluded since their sessions were stored: hidden from search and MCP.
     const exclusions = applyExclusions(db, config);
     const mb = (n: number) => (n / 1e6).toFixed(1);
     console.log(
@@ -339,159 +312,6 @@ async function index(dbPath: string, config: Config, rebuild: boolean): Promise<
   }
 }
 
-async function indexClaims(dbPath: string, config: Config): Promise<number> {
-  const db = openDb(dbPath);
-  try {
-    migrate(db);
-    const r = await syncClaims(db, new Vault(vaultDirFor(dbPath)), await createEmbedder(config, dirname(dbPath)));
-    console.log(`Claims: ${r.inserted} new, ${r.updated} updated, ${r.removed} removed, ${r.embedded} embedded`);
-    for (const e of r.errors) console.error(`glia: ${scrubText(e).value}`);
-    if (r.embedError) console.error(`glia: meaning index of claims not updated (${r.embedError}); keyword search still finds them`);
-    return r.errors.length ? 1 : 0;
-  } finally {
-    db.close();
-  }
-}
-
-/** Characters per token measured on these sources by #32; Haiku 5.5 input at $0.10 per MTok, halved in a batch. */
-const CHARS_PER_TOKEN = 2.25;
-const BATCH_INPUT_PER_MTOK = 0.05;
-const POLL_MS = 60_000;
-
-async function extract(dbPath: string, args: string[], values: { from?: string; "dry-run"?: boolean; wait?: boolean }, config: Config): Promise<number> {
-  const db = openDb(dbPath);
-  try {
-    migrate(db);
-    if (args[0] === "poll") {
-      const client = anthropicBatchClient(anthropicApiKey());
-      for (;;) {
-        const r = await pollExtraction(db, client);
-        console.log(
-          `Batches: ${r.ended} ended, ${r.running} in progress; ${r.candidates} candidates, ${r.failedRequests} failed requests` +
-            (r.ended ? ` (${r.inputTokens} input, ${r.outputTokens} output tokens)` : ""),
-        );
-        const v = validateCandidates(db);
-        if (v.checked) console.log(formatValidation(v));
-        const vault = new Vault(vaultDirFor(dbPath));
-        const d = await dedupCandidates(db, vault, await createEmbedder(config, dirname(dbPath)));
-        for (const e of d.syncErrors) console.error(`glia: ${scrubText(e).value}`);
-        if (d.held) console.error(`glia: meaning index unavailable; ${d.held} candidates held until it is back (run: glia extract poll)`);
-        if (d.previouslyRejected) console.log(`${d.previouslyRejected} candidates dropped: a rewording of a statement you rejected`);
-        const merged = d.merged.intoClaims + d.merged.intoProposals + d.merged.intoCandidates;
-        if (merged || d.similar) console.log(`Deduplicated: ${merged} merged (${d.merged.intoClaims} into claims, ${d.merged.intoProposals} into proposals), ${d.similar} similar to a claim${d.exactOnly ? "; meaning index unavailable, exact matches only" : ""}`);
-        const routed = routeCandidates(db, vault);
-        const rerouted = rerouteProposals(db, vault);
-        const expired = expireProposals(db, vault);
-        if (routed.accepted || routed.queued || routed.previouslyRejected || routed.invalid || rerouted.accepted || expired) {
-          console.log(
-            `Routed: ${routed.accepted} auto-accepted, ${routed.queued} queued (${routed.audits + rerouted.audits} picked for audit), ${routed.previouslyRejected} previously rejected` +
-              (routed.invalid ? `, ${routed.invalid} invalid` : "") +
-              (rerouted.accepted ? `; ${rerouted.accepted} proposals auto-accepted under the current routing` : "") +
-              (expired ? `; ${expired} proposals expired` : ""),
-          );
-        }
-        if (!values.wait || !r.running) return 0;
-        await new Promise((done) => setTimeout(done, POLL_MS));
-      }
-    }
-    if (args.length) {
-      console.error(`glia extract takes no arguments but poll.\n\n${USAGE}`);
-      return 1;
-    }
-    if (values["dry-run"]) {
-      const { sources, requests } = planExtraction(db, { from: values.from, config });
-      const chars = requests.reduce((n, r) => n + r.turns.reduce((m, t) => m + t.text.length, 0), 0);
-      const tokens = Math.round(chars / CHARS_PER_TOKEN);
-      console.log(
-        `Would send ${sources.length} sources in ${requests.length} requests: ${chars} characters, about ${tokens} tokens, ` +
-          `about $${((tokens * BATCH_INPUT_PER_MTOK) / 1e6).toFixed(4)} batched for input`,
-      );
-      return 0;
-    }
-    const r = await submitExtraction(db, anthropicBatchClient(anthropicApiKey()), { from: values.from, config });
-    if (r.jobId === null) console.log("Nothing new to extract.");
-    else console.log(`Submitted job ${r.jobId}: ${r.sources} sources in ${r.requests} requests, ${r.inputTokens} input tokens; run: glia extract poll --wait`);
-    return 0;
-  } finally {
-    db.close();
-  }
-}
-
-/** Single keys from a raw-mode terminal; `ask` drops to a line editor with the text prefilled. */
-function terminalIo(): ReviewIo & { close(): void } {
-  const input = process.stdin;
-  emitKeypressEvents(input);
-  input.setRawMode(true);
-  const queue: string[] = [];
-  let wake: (() => void) | null = null;
-  let asking = false;
-  const onKey = (str: string | undefined, key: { ctrl?: boolean; name?: string }) => {
-    if (asking) return;
-    queue.push(key?.ctrl && key.name === "c" ? "q" : (str ?? ""));
-    wake?.();
-  };
-  input.on("keypress", onKey);
-  return {
-    keys: {
-      async next() {
-        while (!queue.length) await new Promise<void>((done) => (wake = done));
-        return { done: false, value: queue.shift()! };
-      },
-    },
-    async ask(prompt, initial) {
-      asking = true;
-      input.setRawMode(false);
-      const rl = createInterface({ input, output: process.stdout });
-      const answer = await new Promise<string>((done) => {
-        rl.question(prompt, done);
-        rl.write(initial);
-      });
-      rl.close();
-      input.setRawMode(true);
-      asking = false;
-      return answer;
-    },
-    write: (s) => void process.stdout.write(s),
-    close() {
-      input.off("keypress", onKey);
-      input.setRawMode(false);
-      input.pause();
-    },
-  };
-}
-
-async function review(dbPath: string, values: { stats?: boolean; audit?: boolean }): Promise<number> {
-  const db = openDb(dbPath);
-  try {
-    migrate(db);
-    if (values.stats) {
-      const weeks = reviewStats(db);
-      if (!weeks.length) console.log("No review decisions yet.");
-      for (const w of weeks) console.log(`${w.week}: ${w.decided} decided, rejection rate ${Math.round(w.rejectionRate * 100)}%, median ${w.medianSeconds.toFixed(1)} s`);
-      return 0;
-    }
-    if (!process.stdin.isTTY) {
-      console.error("glia review needs a terminal (it reads single keys); --stats works anywhere");
-      return 1;
-    }
-    const vault = new Vault(vaultDirFor(dbPath));
-    for (const e of (await syncClaims(db, vault, null)).errors) console.error(`glia: ${scrubText(e).value}`);
-    const rerouted = rerouteProposals(db, vault);
-    if (rerouted.accepted) console.log(`${rerouted.accepted} proposals auto-accepted under the current routing; they left the inbox.`);
-    expireProposals(db, vault);
-    const io = terminalIo();
-    try {
-      const r = await runReview(db, vault, io, () => new Date(), { audit: values.audit });
-      console.log(`\n${r.decided} decided.`);
-    } finally {
-      io.close();
-    }
-    return 0;
-  } finally {
-    db.close();
-  }
-}
-
 function observeCommand(dbPath: string, config: Config): number {
   if (!existsSync(dbPath)) {
     console.error(`glia: no database at ${dbPath} (run: glia init)`);
@@ -500,29 +320,8 @@ function observeCommand(dbPath: string, config: Config): number {
   const db = openDb(dbPath);
   try {
     const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
-    console.log(formatObserve(observe(db, dbPath, config, embeddingSettings(config).model), { color }));
+    console.log(formatObserve(observe(db, dbPath, embeddingSettings(config).model), { color }));
     return 0;
-  } finally {
-    db.close();
-  }
-}
-
-function audit(dbPath: string, args: string[], values: { n?: string }): number {
-  const db = openDb(dbPath);
-  try {
-    migrate(db);
-    if (args[0] === "sample") {
-      const n = Number(values.n ?? 50);
-      if (!Number.isInteger(n) || n < 1) throw new Error("--n must be a positive whole number");
-      console.log(`Opened ${sampleAudit(db, new Vault(vaultDirFor(dbPath)), n)} audit items; triage them with: glia review --audit`);
-      return 0;
-    }
-    if (args[0] === "report") {
-      console.log(formatAudit(auditReport(db)));
-      return 0;
-    }
-    console.error(`glia audit needs: sample | report\n\n${USAGE}`);
-    return 1;
   } finally {
     db.close();
   }
@@ -565,7 +364,7 @@ function mcp(dbPath: string, config: Config): number {
   const { model } = embeddingSettings(config);
   // Built when the first query needs it: loading the model costs seconds and memory a session may never use.
   const embedder = new LazyEmbedder(model, () => createEmbedder(config, dirname(dbPath)));
-  const handle = serveStdio(() => createMcpServer(db, embedder, new Vault(vaultDirFor(dbPath))), {
+  const handle = serveStdio(() => createMcpServer(db, embedder), {
     onerror: (err) => console.error(`glia mcp: ${err.message}`),
   });
   // A search can still be waiting on Ollama when the client leaves: nobody will read its answer,
@@ -582,16 +381,13 @@ function mcp(dbPath: string, config: Config): number {
 async function evalCommand(
   dbPath: string,
   args: string[],
-  values: { questions?: string; "arm-a"?: string; model?: string; "judge-model"?: string; only?: string; details?: boolean; arms?: string },
+  values: { questions?: string; "arm-a"?: string; model?: string; "judge-model"?: string; only?: string; details?: boolean },
 ): Promise<number> {
   const [sub, ...rest] = args;
   const db = openDb(dbPath);
   try {
     migrate(db);
     if (sub === "run") {
-      // Arm C (claims) runs by default next to raw search, so every run shows whether claims help.
-      const arms = (values.arms ?? "B,C").split(",").map((a) => a.trim().toUpperCase());
-      if (!arms.length || !arms.every((a): a is ToolArm => a === "B" || a === "C")) throw new Error("--arms takes B, C or both (B,C)");
       const evalDir = join(dirname(dbPath), "eval");
       const questionsPath = values.questions ?? join(evalDir, "questions.jsonl");
       const { questions: all, sha256 } = readQuestionsFile(questionsPath);
@@ -611,7 +407,6 @@ async function evalCommand(
         model: values.model ?? "sonnet",
         judgeModel: values["judge-model"] ?? "sonnet",
         mcpCommand,
-        arms: [...new Set(arms)] as ToolArm[],
         onProgress: (line) => console.error(`glia: ${line}`),
       });
       console.log(formatEvalReport(evalReport(db, runId), false));
@@ -674,20 +469,13 @@ async function daemonService(action: "install" | "uninstall" | "status"): Promis
   return (await serviceActive(deps)) ? 0 : 1;
 }
 
-/** `glia hook session-start`: always exits 0 and prints nothing when there is nothing to say. */
-async function sessionStartCommand(dbPath: string, config: Config): Promise<number> {
+/**
+ * `glia hook session-start`: prints nothing. The briefing it gave went with the claims; the
+ * command stays so the SessionStart hook of an older plugin still exits cleanly.
+ */
+async function sessionStartCommand(): Promise<number> {
   try {
-    let stdin = "";
-    for await (const chunk of process.stdin) stdin += chunk;
-    const cwd = (JSON.parse(stdin || "{}") as { cwd?: unknown }).cwd;
-    if (typeof cwd !== "string" || !existsSync(dbPath)) return 0;
-    const db = openDb(dbPath);
-    try {
-      const out = sessionStartHook({ cwd }, { db, config, gitRemote: gitRemoteOf });
-      if (out) process.stdout.write(`${out}\n`);
-    } finally {
-      db.close();
-    }
+    for await (const _ of process.stdin);
   } catch {
     // a hook never fails the session
   }
@@ -719,15 +507,7 @@ async function daemon(dbPath: string, config: Config, once: boolean): Promise<nu
   const db = openDb(dbPath);
   migrate(db);
   const log = daemonLogger(join(dataDir, "daemon.log"));
-  const hasApiKey = () => {
-    try {
-      anthropicApiKey();
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const jobs = localJobs({ cli: [process.execPath, ...process.execArgv, process.argv[1]!], db, dbPath: resolve(dbPath), config, hasApiKey });
+  const jobs = localJobs({ cli: [process.execPath, ...process.execArgv, process.argv[1]!], db, dbPath: resolve(dbPath), config });
   try {
     if (once) {
       for (const r of await runOnce(jobs)) {
@@ -759,16 +539,11 @@ async function main(argv: string[]): Promise<number> {
       "dry-run": { type: "boolean" },
       show: { type: "boolean" },
       rebuild: { type: "boolean" },
-      claims: { type: "boolean" },
-      from: { type: "string" },
-      wait: { type: "boolean" },
       once: { type: "boolean" },
       yes: { type: "boolean" },
       "db-only": { type: "boolean" },
       exclude: { type: "string", multiple: true },
       "no-service": { type: "boolean" },
-      stats: { type: "boolean" },
-      audit: { type: "boolean" },
       limit: { type: "string" },
       injected: { type: "boolean" },
       json: { type: "boolean" },
@@ -778,8 +553,6 @@ async function main(argv: string[]): Promise<number> {
       "judge-model": { type: "string" },
       only: { type: "string" },
       details: { type: "boolean" },
-      arms: { type: "string" },
-      n: { type: "string" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
     },
@@ -830,14 +603,7 @@ async function main(argv: string[]): Promise<number> {
       }
       return ingest(values.db ?? defaultDbPath(), args, loadConfig());
     case "index":
-      if (values.claims) return indexClaims(values.db ?? defaultDbPath(), loadConfig());
       return index(values.db ?? defaultDbPath(), loadConfig(), values.rebuild ?? false);
-    case "audit":
-      return audit(values.db ?? defaultDbPath(), args, values);
-    case "review":
-      return review(values.db ?? defaultDbPath(), values);
-    case "extract":
-      return extract(values.db ?? defaultDbPath(), args, values, loadConfig());
     case "search": {
       const limit = Number(values.limit ?? 10);
       if (!args.length || !Number.isInteger(limit) || limit < 1) {
@@ -858,7 +624,7 @@ async function main(argv: string[]): Promise<number> {
         console.error(`glia hook needs: session-start\n\n${USAGE}`);
         return 1;
       }
-      return sessionStartCommand(values.db ?? defaultDbPath(), loadConfig());
+      return sessionStartCommand();
     case "mcp":
       return mcp(values.db ?? defaultDbPath(), loadConfig());
     case "eval":

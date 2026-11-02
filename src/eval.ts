@@ -1,8 +1,8 @@
-// The evaluation harness (#10, #42, SPEC.md "Evaluation"): arm B answers each question with
-// `claude -p` and the evidence tools only (raw search, baseline 3), arm C with the claim tools only
-// (recall and brief, baseline 4). Claude judges every answer against its reference, and the run is
-// stored dated. Arm A (claude.ai's own chat search) is asked by hand; its answers are read from a
-// file and judged the same way. The Phase 0 gate compares A and B; Phase 1 compares C with B.
+// The evaluation harness (#10, SPEC.md "Evaluation"): arm B answers each question with `claude -p`
+// and the evidence tools only (raw search, baseline 3). Claude judges every answer against its
+// reference, and the run is stored dated. Arm A (claude.ai's own chat search) is asked by hand; its
+// answers are read from a file and judged the same way. The gate compares A and B. Arm C (the claims
+// layer, since removed) is still shown for the runs that have it.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -112,8 +112,6 @@ export const runClaude: ClaudeRunner = (args, { cwd, timeoutMs }) =>
   });
 
 const ARM_B_TOOLS = ["mcp__glia__search_evidence", "mcp__glia__open_evidence"];
-const ARM_C_TOOLS = ["mcp__glia__recall", "mcp__glia__brief"];
-export type ToolArm = "B" | "C";
 
 /**
  * Only the glia tools: no built-in tool (no file reads, no shell), no other MCP server, no user
@@ -127,16 +125,6 @@ export function armBPrompt(question: string): string {
     "Answer a question about my own past conversations with Claude (Claude Code sessions, claude.ai chats and projects, memory files).",
     "Use the search_evidence and open_evidence tools: search, trying other wordings or the other language (French or English) when the first search is thin, open the most relevant turns, then answer briefly and specifically, in the language of the question.",
     "When something changed over time, give the latest state and say what it replaced. If the history does not hold the answer, say you could not find it instead of guessing.",
-    "",
-    `Question: ${question}`,
-  ].join("\n");
-}
-
-export function armCPrompt(question: string): string {
-  return [
-    "Answer a question about my own past conversations with Claude, from the facts, preferences and decisions my memory holds about me.",
-    "Use the recall and brief tools: recall with a few wordings or the other language (French or English) when the first is thin, use as_of or include_superseded for questions about the past, then answer briefly and specifically, in the language of the question.",
-    "Each claim says whether I said it or Claude suggested it, and the date it holds from: use both. When something changed over time, give the latest state and say what it replaced. If the memory does not hold the answer, say you could not find it instead of guessing.",
     "",
     `Question: ${question}`,
   ].join("\n");
@@ -238,8 +226,6 @@ export interface RunOptions {
   judgeModel: string;
   /** The command that starts the glia MCP server, as [executable, ...args]. */
   mcpCommand: string[];
-  /** The tool arms to run: B (evidence tools), C (claim tools). Default: B only. */
-  arms?: ToolArm[];
   concurrency?: number;
   timeoutMs?: number;
   onProgress?: (line: string) => void;
@@ -248,7 +234,7 @@ export interface RunOptions {
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 export const questionsSha256 = sha256;
 
-/** Runs every question through the tool arms, judges them and arm A, stores the run; returns its id. */
+/** Runs every question through arm B, judges it and arm A, stores the run; returns its id. */
 export async function runEval(db: Database.Database, opts: RunOptions, runner: ClaudeRunner = runClaude): Promise<number> {
   const timeoutMs = opts.timeoutMs ?? 300_000;
   const work = mkdtempSync(join(tmpdir(), "glia-eval-"));
@@ -271,16 +257,14 @@ export async function runEval(db: Database.Database, opts: RunOptions, runner: C
       return { verdict: "error" as const, reason: `judge failed: ${err instanceof Error ? err.message : String(err)}` };
     }
   };
-  const arms = opts.arms ?? ["B"];
-  const toolArm = async (arm: ToolArm, q: Question) => {
+  const armB = async (q: Question) => {
     const base = { run_id: runId, question_id: q.id, category: q.category, location: q.where, question: q.question, reference: q.reference };
     const started = Date.now();
     let res: ArmBResult | null = null;
     let failure = "";
-    const [prompt, tools] = arm === "B" ? [armBPrompt(q.question), ARM_B_TOOLS] : [armCPrompt(q.question), ARM_C_TOOLS];
     try {
       const stdout = await runner(
-        ["-p", prompt, "--model", opts.model, ...ISOLATION, "--mcp-config", mcpConfig, "--allowedTools", tools.join(" "), "--output-format", "stream-json", "--verbose"],
+        ["-p", armBPrompt(q.question), "--model", opts.model, ...ISOLATION, "--mcp-config", mcpConfig, "--allowedTools", ARM_B_TOOLS.join(" "), "--output-format", "stream-json", "--verbose"],
         { cwd: work, timeoutMs },
       );
       res = parseStream(stdout);
@@ -288,25 +272,25 @@ export async function runEval(db: Database.Database, opts: RunOptions, runner: C
       failure = err instanceof Error ? err.message : String(err);
     }
     const seconds = (Date.now() - started) / 1000;
-    const v = res ? await judge(q, res.answer) : { verdict: "error" as const, reason: `arm ${arm} failed: ${failure}` };
+    const v = res ? await judge(q, res.answer) : { verdict: "error" as const, reason: `arm B failed: ${failure}` };
     insert.run({
       ...base,
-      arm,
+      arm: "B",
       answer: res?.answer ?? null,
       verdict: v.verdict,
       reason: v.reason,
-      // Retrieval is measured on turns, which only arm B searches. A failed run found nothing: a miss.
-      hit_at_8: arm === "B" && q.sources.length ? (res && hitAt8(q, res.searches) ? 1 : 0) : null,
-      searches: arm === "B" && res ? JSON.stringify({ searches: res.searches, opened: res.opened }) : null,
+      // A failed run found nothing: a miss.
+      hit_at_8: q.sources.length ? (res && hitAt8(q, res.searches) ? 1 : 0) : null,
+      searches: res ? JSON.stringify({ searches: res.searches, opened: res.opened }) : null,
       seconds,
     });
-    return `${arm} ${v.verdict}`;
+    return `B ${v.verdict}`;
   };
   const one = async (q: Question) => {
     const base = { run_id: runId, question_id: q.id, category: q.category, location: q.where, question: q.question, reference: q.reference };
     const started = Date.now();
     const done: string[] = [];
-    for (const arm of arms) done.push(await toolArm(arm, q));
+    done.push(await armB(q));
     const a = opts.armA.get(q.id);
     if (a !== undefined) {
       const va = await judge(q, a);

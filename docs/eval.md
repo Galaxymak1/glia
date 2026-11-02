@@ -29,13 +29,11 @@ A question line:
   - its only tools are `search_evidence` and `open_evidence`;
   - no built-in tools, no other MCP server, no user settings or hooks, no CLAUDE.md;
   - no session file, so a run is never ingested back as evidence.
-- **Arm C, `claude -p` with the claim tools.** The same isolation; its only tools are `recall` and `brief`, so it answers from reviewed claims alone (SPEC.md baseline 4). It has no retrieval score: it searches claims, not turns.
 
 ## Running
 
 ```sh
-glia eval run                           # every question; arms B and C, and the judge, on sonnet
-glia eval run --arms B                  # raw search only
+glia eval run                           # every question; arm B and the judge on sonnet
 glia eval run --only q01,q02 --model haiku
 glia eval report                        # latest run: per category, hit@8, gate
 glia eval report 3 --details            # every answer, reference and verdict
@@ -54,14 +52,6 @@ glia eval verify 3 q07 B incorrect      # a verdict checked by hand overrides Cl
 
 On the first run, check every verdict by hand (`glia eval report --details`, then `glia eval verify`).
 
-## Phase 1 gate (#42)
+## Arm C, the claims layer (removed)
 
-The roadmap's gate: **write precision of 80% or more on a sampled audit, and zero AI-suggested claims auto-accepted.**
-
-```sh
-glia audit sample          # opens 50 audit items for auto-accepted claims never audited
-glia review --audit        # a: right as written · e: right once reworded · r: wrong, retracts the claim
-glia audit report          # precision = kept / judged; an edited claim does not count as kept
-```
-
-`audit report` also counts claims auto-accepted with an origin other than `user_stated` or `user_confirmed`; the gate needs zero. Next to it, `glia eval report` compares arm C with arm B per category, so the owner can see where claims beat raw search before deciding the gate.
+Up to 0.1.2 an arm C answered with `recall` and `brief` only, from claims extracted by Claude Haiku and reviewed by hand. On 50 questions it scored 15/50 against 43/50 for arm B: the extracted claims rarely held the fact a question asked about, and carried no history for temporal or provenance questions. The claims layer was removed; its code is in the `claims-layer-final` tag. `glia eval report` still shows arm C for the runs that have it.

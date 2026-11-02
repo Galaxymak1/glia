@@ -21,7 +21,7 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 const ok: SpawnJob = async () => ({ code: 0, stdout: "", stderr: "" });
-const ctx = () => ({ cli: ["node", "cli.js"], db, dbPath: "/d/glia.db", config, hasApiKey: () => true, spawnJob: ok });
+const ctx = () => ({ cli: ["node", "cli.js"], db, dbPath: "/d/glia.db", config, spawnJob: ok });
 function insertUnembeddedTurn() {
   writeSource(
     db,
@@ -29,8 +29,6 @@ function insertUnembeddedTurn() {
     [{ externalUuid: "u1", parentUuid: null, role: "user", ts: "2026-10-20T10:00:01Z", text: "we chose SQLite", isSidechain: false, isInjected: false }],
   );
 }
-const at0215 = new Date("2026-10-27T01:15:00Z");
-const at0100 = new Date("2026-10-27T00:00:00Z");
 
 describe("localJobs", () => {
   it("indexes while anything is pending, and not once nothing is", async () => {
@@ -38,12 +36,12 @@ describe("localJobs", () => {
     const spawn: SpawnJob = async (argv) => (calls.push(argv.slice(2).join(" ")), { code: 0, stdout: "", stderr: "" });
     insertUnembeddedTurn();
     expect(pendingIndex(db, "fake@1")).toBe(1);
-    await runOnce(localJobs({ ...ctx(), spawnJob: spawn, hasApiKey: () => false }));
-    expect(calls).toEqual([expect.stringMatching(/^ingest .* --db \/d\/glia\.db$/), "index --db /d/glia.db", "index --claims --db /d/glia.db"]);
+    await runOnce(localJobs({ ...ctx(), spawnJob: spawn }));
+    expect(calls).toEqual([expect.stringMatching(/^ingest .* --db \/d\/glia\.db$/), "index --db /d/glia.db"]);
     await buildIndex(db, new VectorEmbedder());
     expect(pendingIndex(db, "fake@1")).toBe(0);
     calls.length = 0;
-    await runOnce(localJobs({ ...ctx(), spawnJob: spawn, hasApiKey: () => false }));
+    await runOnce(localJobs({ ...ctx(), spawnJob: spawn }));
     expect(calls).toEqual([expect.stringMatching(/^ingest /)]);
   });
 
@@ -53,18 +51,8 @@ describe("localJobs", () => {
     expect(pendingIndex(db, "fake@1")).toBe(1);
   });
 
-  it("no API key: no extraction job", () => {
-    const submit = (hasApiKey: () => boolean) => localJobs({ ...ctx(), hasApiKey }).find((j) => j.type === "extract_submit")!;
-    expect(submit(() => false).key(at0215)).toBeNull();
-    expect(submit(() => true).key(at0215)).toBe("2026-10-27");
-    expect(submit(() => true).key(at0100)).toBeNull();
-  });
-
-  it("polls only while an extraction batch is running", () => {
-    const poll = () => localJobs(ctx()).find((j) => j.type === "extract_poll")!.key(at0215);
-    expect(poll()).toBeNull();
-    db.prepare("INSERT INTO jobs (type, state, batch_id) VALUES ('extract', 'running', 'b1')").run();
-    expect(poll()).toBe("2026-10-27T02:15");
+  it("runs only the sweep and the index", () => {
+    expect(localJobs(ctx()).map((j) => j.type)).toEqual(["sweep", "index"]);
   });
 
   it("sweeps the configured folders", async () => {

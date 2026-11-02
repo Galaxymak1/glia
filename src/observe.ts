@@ -1,19 +1,13 @@
-// `glia observe`: one screen of what the brain holds and what is waiting on whom: evidence
-// ingested, the meaning index, extraction, claims, the review inbox, the audit, the daemon's
-// jobs and the last evaluation. Read-only: it never routes, expires or migrates anything.
+// `glia observe`: one screen of what glia holds and how fresh it is: evidence ingested, the
+// meaning index, the daemon's jobs and the last evaluation. Read-only: it never migrates anything.
 
 import { styleText } from "node:util";
 import type Database from "better-sqlite3";
-import { auditReport, PRECISION_TARGET } from "./audit.js";
 import { evalReport } from "./eval.js";
-import { planExtraction } from "./extractor.js";
-import type { Config } from "./config.js";
 import { schemaVersion } from "./migrations.js";
-import { isoSeconds } from "./route.js";
+import { isoSeconds } from "./scheduler.js";
 import { indexStatus } from "./vectors.js";
 
-/** The inbox size SPEC.md "Review inbox" aims for. */
-export const INBOX_TARGET = 10;
 const DAY_MS = 86_400_000;
 
 type Counts = Record<string, number>;
@@ -23,57 +17,33 @@ export interface Observation {
   dbPath: string;
   schema: number;
   evidence: { sources: Counts; excluded: number; turns: number; lastTurn: string | null; rawFiles: number; lastReceived: string | null };
-  index: { chunks: number; embedded: number; missingTurns: number; otherModel: number; claims: number; claimsEmbedded: number };
-  extraction: { extracted: number; waiting: number | null; running: number; lastBatch: string | null; candidates: Counts };
-  claims: { status: Counts; kind: Counts; origin: Counts };
-  inbox: { open: number; reasons: Counts; audits: number; snoozed: number; oldest: string | null; expiringWeek: number };
-  review: { week: number; rejected: number };
-  audit: { judged: number; kept: number; precision: number | null; aiAutoAccepted: number; gate: boolean | null };
+  index: { chunks: number; embedded: number; missingTurns: number; otherModel: number };
   jobs: { type: string; state: string; at: string | null }[];
   failedDay: number;
-  eval: { runId: number; startedAt: string; b: string; c: string; a: string; unverified: number; pass: boolean | null } | null;
+  eval: { runId: number; startedAt: string; b: string; a: string; unverified: number; pass: boolean | null } | null;
 }
 
 const countBy = (db: Database.Database, sql: string, ...params: unknown[]): Counts =>
   Object.fromEntries((db.prepare(sql).all(...params) as { k: string | null; n: number }[]).map((r) => [r.k ?? "none", r.n]));
 const one = (db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as Record<string, number | string | null>;
 
-/**
- * The reason a proposal is queued, without the claim it is similar to: "similar:clm_X" counts as
- * "similar", so the reasons read as a few groups.
- */
-const reasonGroup = (reason: string) => (reason.startsWith("similar:") ? "similar" : reason);
-
-export function observe(db: Database.Database, dbPath: string, config: Config, model: string, now = new Date()): Observation {
-  const at = isoSeconds(now);
-  const sources = countBy(db, "SELECT kind AS k, count(*) AS n FROM sources WHERE excluded = 0 GROUP BY kind ORDER BY n DESC");
+export function observe(db: Database.Database, dbPath: string, model: string, now = new Date()): Observation {
   const idx = indexStatus(db, model);
-  const reasons: Counts = {};
-  for (const [r, n] of Object.entries(countBy(db, "SELECT reason AS k, count(*) AS n FROM proposals WHERE state = 'open' AND kind <> 'audit' GROUP BY reason"))) {
-    reasons[reasonGroup(r)] = (reasons[reasonGroup(r)] ?? 0) + n;
-  }
-  const week = isoSeconds(new Date(now.getTime() - 7 * DAY_MS));
-  const decided = countBy(db, "SELECT state AS k, count(*) AS n FROM proposals WHERE decision_ms IS NOT NULL AND decided_at >= ? GROUP BY state", week);
-  const a = auditReport(db);
-  let waiting: number | null;
-  try {
-    waiting = planExtraction(db, { config }).sources.length;
-  } catch {
-    waiting = null;
-  }
   let ev: Observation["eval"] = null;
-  if (one(db, "SELECT count(*) AS n FROM eval_runs").n) {
-    const r = evalReport(db);
+  // The latest run of arm B: a run with arm C only, from before the claims layer went, has no gate.
+  const runId = one(db, "SELECT max(run_id) AS v FROM eval_results WHERE arm = 'B'").v as number | null;
+  if (runId !== null) {
+    const r = evalReport(db, runId);
     const pct = (t: { correct: number; total: number }) => (t.total ? `${t.correct}/${t.total} (${Math.round((t.correct / t.total) * 100)}%)` : "-");
     const armA = Object.values(r.byCategory).reduce((s, c) => ({ correct: s.correct + c.A.correct, total: s.total + c.A.total }), { correct: 0, total: 0 });
-    ev = { runId: r.runId, startedAt: r.startedAt, b: pct(r.armB), c: pct(r.armC), a: pct(armA), unverified: r.unverified, pass: r.gate.pass };
+    ev = { runId: r.runId, startedAt: r.startedAt, b: pct(r.armB), a: pct(armA), unverified: r.unverified, pass: r.gate.pass };
   }
   return {
-    now: at,
+    now: isoSeconds(now),
     dbPath,
     schema: schemaVersion(db),
     evidence: {
-      sources,
+      sources: countBy(db, "SELECT kind AS k, count(*) AS n FROM sources WHERE excluded = 0 GROUP BY kind ORDER BY n DESC"),
       excluded: one(db, "SELECT count(*) AS n FROM sources WHERE excluded = 1").n as number,
       turns: one(db, "SELECT count(*) AS n FROM turns t JOIN sources s ON s.id = t.source_id WHERE s.excluded = 0").n as number,
       lastTurn: one(db, "SELECT max(t.ts) AS v FROM turns t JOIN sources s ON s.id = t.source_id WHERE s.excluded = 0").v as string | null,
@@ -85,43 +55,15 @@ export function observe(db: Database.Database, dbPath: string, config: Config, m
       embedded: one(db, "SELECT count(*) AS n FROM chunks_vec WHERE model = ?", model).n as number,
       missingTurns: idx.missing,
       otherModel: idx.otherModel,
-      claims: one(db, "SELECT count(*) AS n FROM claims").n as number,
-      claimsEmbedded: one(db, "SELECT count(*) AS n FROM claims_vec WHERE model = ?", model).n as number,
     },
-    extraction: {
-      extracted: one(db, "SELECT count(*) AS n FROM extraction_state").n as number,
-      waiting,
-      running: one(db, "SELECT count(*) AS n FROM jobs WHERE type = 'extract' AND state = 'running'").n as number,
-      lastBatch: one(db, "SELECT max(finished_at) AS v FROM jobs WHERE type = 'extract' AND state = 'done'").v as string | null,
-      candidates: countBy(db, "SELECT state AS k, count(*) AS n FROM candidates GROUP BY state ORDER BY n DESC"),
-    },
-    claims: {
-      status: countBy(db, "SELECT status AS k, count(*) AS n FROM claims GROUP BY status ORDER BY n DESC"),
-      kind: countBy(db, "SELECT kind AS k, count(*) AS n FROM claims WHERE status = 'active' GROUP BY kind ORDER BY n DESC"),
-      origin: countBy(db, "SELECT origin AS k, count(*) AS n FROM claims WHERE status = 'active' GROUP BY origin ORDER BY n DESC"),
-    },
-    inbox: {
-      open: one(db, "SELECT count(*) AS n FROM proposals WHERE state = 'open'").n as number,
-      reasons,
-      audits: one(db, "SELECT count(*) AS n FROM proposals WHERE state = 'open' AND kind = 'audit'").n as number,
-      snoozed: one(db, "SELECT count(*) AS n FROM proposals WHERE state = 'open' AND snoozed_until > ?", at).n as number,
-      oldest: one(db, "SELECT min(created_at) AS v FROM proposals WHERE state = 'open'").v as string | null,
-      expiringWeek: one(db, "SELECT count(*) AS n FROM proposals WHERE state = 'open' AND expires_at <= ?", isoSeconds(new Date(now.getTime() + 7 * DAY_MS))).n as number,
-    },
-    review: { week: Object.values(decided).reduce((s, n) => s + n, 0), rejected: decided.rejected ?? 0 },
-    audit: {
-      judged: a.judged,
-      kept: a.kept,
-      precision: a.precision,
-      aiAutoAccepted: a.aiAutoAccepted,
-      gate: a.precision === null ? null : a.precision >= PRECISION_TARGET && a.aiAutoAccepted === 0,
-    },
+    // The latest run of each job that ran in the last 7 days: a job type the daemon no longer
+    // runs (extraction, before 0.2.0) drops out.
     jobs: db
       .prepare(
         `SELECT j.type, j.state, coalesce(j.finished_at, j.started_at) AS at FROM jobs j
-         WHERE j.id = (SELECT max(id) FROM jobs k WHERE k.type = j.type) ORDER BY j.type`,
+         WHERE j.id = (SELECT max(id) FROM jobs k WHERE k.type = j.type) AND coalesce(j.finished_at, j.started_at) >= ? ORDER BY j.type`,
       )
-      .all() as Observation["jobs"],
+      .all(isoSeconds(new Date(now.getTime() - 7 * DAY_MS))) as Observation["jobs"],
     failedDay: one(db, "SELECT count(*) AS n FROM jobs WHERE state = 'failed' AND finished_at >= ?", isoSeconds(new Date(now.getTime() - DAY_MS))).n as number,
     eval: ev,
   };
@@ -149,15 +91,12 @@ export function formatObserve(o: Observation, opts: { color: boolean }): string 
   const bad = (s: string) => paint("red", s);
   const n = (v: number) => v.toLocaleString("en-US");
   const list = (c: Counts) => Object.entries(c).map(([k, v]) => `${k} ${n(v)}`).join(", ") || "none";
-  const row = (label: string, value: string) => `  ${label.padEnd(14)}${value}`;
-  const pct = (part: number, whole: number) => (whole ? `${Math.round((part / whole) * 100)}%` : "-");
+  const row = (label: string, value: string) => `  ${label.padEnd(13)} ${value}`;
 
   const e = o.evidence;
   const total = Object.values(e.sources).reduce((s, v) => s + v, 0);
   const i = o.index;
-  const indexDone = i.missingTurns === 0 && i.otherModel === 0 && i.claimsEmbedded >= i.claims;
-  const x = o.extraction;
-  const inboxOver = o.inbox.open - o.inbox.audits > INBOX_TARGET;
+  const indexDone = i.missingTurns === 0 && i.otherModel === 0 && i.embedded >= i.chunks;
   const lines = [
     `${head("glia")}  ${dim(`${o.dbPath}  schema v${o.schema}  ${o.now}`)}`,
     "",
@@ -168,32 +107,7 @@ export function formatObserve(o: Observation, opts: { color: boolean }): string 
     "",
     head("Meaning index"),
     row("turns", `${n(i.embedded)}/${n(i.chunks)} chunks embedded${i.missingTurns ? warn(`, ${n(i.missingTurns)} turns not chunked yet`) : ""}${i.otherModel ? warn(`, ${n(i.otherModel)} from another model`) : ""}`),
-    row("claims", `${n(i.claimsEmbedded)}/${n(i.claims)} embedded`),
-    row("state", indexDone ? ok("up to date") : warn("behind (run: glia index, glia index --claims)")),
-    "",
-    head("Extraction"),
-    row("sources", `${n(x.extracted)} sent${x.waiting === null ? "" : x.waiting ? warn(`, ${n(x.waiting)} new or changed waiting`) : ok(", none waiting")}`),
-    row("batches", `${x.running ? warn(`${x.running} running`) : "none running"}  ${dim(`last done ${ago(x.lastBatch, now)}`)}`),
-    row("candidates", list(x.candidates)),
-    "",
-    head("Claims"),
-    row("status", list(o.claims.status)),
-    row("active kinds", list(o.claims.kind)),
-    row("origins", list(o.claims.origin)),
-    "",
-    head("Review inbox"),
-    row("open", `${(inboxOver ? warn : ok)(`${n(o.inbox.open - o.inbox.audits)} to review`)} ${dim(`(target ${INBOX_TARGET} or fewer)`)}, ${n(o.inbox.audits)} audit items${o.inbox.snoozed ? `, ${n(o.inbox.snoozed)} snoozed` : ""}`),
-    row("why queued", list(o.inbox.reasons)),
-    row("oldest", `${ago(o.inbox.oldest, now)}${o.inbox.expiringWeek ? warn(`; ${n(o.inbox.expiringWeek)} expire within 7 days`) : ""}`),
-    row("last 7 days", `${n(o.review.week)} decided, ${n(o.review.rejected)} rejected  ${dim("(glia review)")}`),
-    "",
-    head("Audit"),
-    row(
-      "precision",
-      o.audit.precision === null
-        ? dim("nothing judged yet (glia audit sample)")
-        : `${o.audit.kept}/${o.audit.judged} (${pct(o.audit.kept, o.audit.judged)}), AI-origin auto-accepted ${o.audit.aiAutoAccepted}: gate ${o.audit.gate ? ok("met") : bad("NOT met")}`,
-    ),
+    row("state", indexDone ? ok("up to date") : warn("behind (run: glia index)")),
     "",
     head("Jobs"),
     ...(o.jobs.length
@@ -205,7 +119,7 @@ export function formatObserve(o: Observation, opts: { color: boolean }): string 
     o.eval
       ? row(
           `run ${o.eval.runId}`,
-          `B ${o.eval.b}, C ${o.eval.c}, A ${o.eval.a}: gate ${o.eval.pass === null ? "-" : o.eval.pass ? ok("PASS") : bad("FAIL")}  ${dim(ago(o.eval.startedAt, now))}` +
+          `B ${o.eval.b}, A ${o.eval.a}: gate ${o.eval.pass === null ? "-" : o.eval.pass ? ok("PASS") : bad("FAIL")}  ${dim(ago(o.eval.startedAt, now))}` +
             (o.eval.unverified ? warn(`; ${o.eval.unverified} verdicts not checked by hand`) : ""),
         )
       : row("none", dim("no run yet (glia eval run)")),

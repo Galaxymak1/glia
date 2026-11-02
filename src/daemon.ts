@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { type Config, embeddingSettings } from "./config.js";
-import { dailyAt, every15, type Job } from "./scheduler.js";
+import { every15, type Job } from "./scheduler.js";
 import { defaultTranscriptsDir } from "./scan.js";
 import { indexStatus } from "./vectors.js";
 
@@ -46,13 +46,10 @@ export function spawnJob(argv: string[], timeoutMs: number, onSpawn?: (pid: numb
   });
 }
 
-/** Turns the meaning index has not embedded with `model` yet, plus claims with no vector from it. */
+/** Turns the meaning index has not embedded with `model` yet. */
 export function pendingIndex(db: Database.Database, model: string): number {
   const s = indexStatus(db, model);
-  const claims = db
-    .prepare("SELECT count(*) AS n FROM claims c WHERE NOT EXISTS (SELECT 1 FROM claims_vec v WHERE v.claim_n = c.n AND v.model = ?)")
-    .get(model) as { n: number };
-  return s.missing + s.otherModel + claims.n;
+  return s.missing + s.otherModel;
 }
 
 export interface LocalJobsContext {
@@ -61,7 +58,6 @@ export interface LocalJobsContext {
   db: Database.Database;
   dbPath: string;
   config: Config;
-  hasApiKey: () => boolean;
   spawnJob?: SpawnJob;
 }
 
@@ -74,8 +70,6 @@ export function localJobs(ctx: LocalJobsContext): Job[] {
   };
   const paths = ctx.config.daemon?.paths ?? [defaultTranscriptsDir()];
   const { model } = embeddingSettings(ctx.config);
-  const extractRunning = ctx.db.prepare("SELECT 1 FROM jobs WHERE type = 'extract' AND state = 'running' LIMIT 1");
-  const submitAt = dailyAt(2, 0);
   const job = (type: string, timeoutMs: number, key: Job["key"], steps: string[][]): Job => ({
     type,
     key,
@@ -86,9 +80,7 @@ export function localJobs(ctx: LocalJobsContext): Job[] {
   });
   return [
     job("sweep", 30 * MINUTE, every15, [["ingest", ...paths]]),
-    job("index", 60 * MINUTE, (now) => (pendingIndex(ctx.db, model) > 0 ? every15(now) : null), [["index"], ["index", "--claims"]]),
-    job("extract_submit", 10 * MINUTE, (now) => (ctx.hasApiKey() ? submitAt(now) : null), [["extract"]]),
-    job("extract_poll", 30 * MINUTE, (now) => (extractRunning.get() ? every15(now) : null), [["extract", "poll"]]),
+    job("index", 60 * MINUTE, (now) => (pendingIndex(ctx.db, model) > 0 ? every15(now) : null), [["index"]]),
   ];
 }
 
